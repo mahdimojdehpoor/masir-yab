@@ -1,0 +1,17 @@
+{
+  "expo": {
+    "name": "VoiceNav",
+    "slug": "voice-nav-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "android": {
+      "package": "com.yourname.voicenav",
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "FOREGROUND_SERVICE"
+      ]
+    }
+  }
+}
