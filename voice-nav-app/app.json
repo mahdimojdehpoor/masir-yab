@@ -4,6 +4,10 @@
     "slug": "voice-nav-app",
     "version": "1.0.0",
     "orientation": "portrait",
+    "splash": {
+      "backgroundColor": "#1e90ff",
+      "resizeMode": "contain"
+    },
     "android": {
       "package": "com.yourname.voicenav",
       "permissions": [
