@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { View, StyleSheet, TouchableOpacity, Text } from "react-native";
-import MapView, { Marker, Polyline } from "react-native-maps";
+import { WebView } from "react-native-webview";
 import * as Location from "expo-location";
 
 import SearchBar from "../components/SearchBar";
@@ -10,12 +10,13 @@ import {
   listenToReports,
   addReport,
   confirmReport,
-  denyReport,
 } from "../services/reportService";
 import { listenToCameras, checkCameraAlerts } from "../services/cameraService";
 import { speak } from "../services/voiceService";
+import { getMapHtml } from "../utils/mapHtml";
 
 export default function MapScreen() {
+  const webviewRef = useRef(null);
   const [origin, setOrigin] = useState(null);
   const [destination, setDestination] = useState(null);
   const [route, setRoute] = useState(null);
@@ -24,6 +25,7 @@ export default function MapScreen() {
   const [policeReports, setPoliceReports] = useState([]);
   const [cameras, setCameras] = useState([]);
   const [pickMode, setPickMode] = useState(null); // "origin" | "destination" | null
+  const [mapReady, setMapReady] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -72,18 +74,42 @@ export default function MapScreen() {
     }
   }, [origin, destination, routeMode]);
 
-  const handleMapPress = (e) => {
-    if (pickMode === "origin") {
-      setOrigin(e.nativeEvent.coordinate);
-      setPickMode(null);
-    } else if (pickMode === "destination") {
-      setDestination(e.nativeEvent.coordinate);
-      setPickMode(null);
-    }
-  };
+  // هر بار داده‌ها عوض شدن، به نقشه‌ی داخل WebView بفرست
+  useEffect(() => {
+    if (!mapReady || !webviewRef.current) return;
+    const payload = {
+      origin,
+      destination,
+      route: route ? route.points : null,
+      cameras,
+      crashReports,
+      policeReports,
+    };
+    webviewRef.current.postMessage(JSON.stringify(payload));
+  }, [origin, destination, route, cameras, crashReports, policeReports, mapReady]);
 
-  const handleLongPressReport = (type) => (e) => {
-    addReport(type, e.nativeEvent.coordinate);
+  const handleWebViewMessage = (event) => {
+    try {
+      const data = JSON.parse(event.nativeEvent.data);
+
+      if (data.type === "ready") {
+        setMapReady(true);
+      } else if (data.type === "mapPress") {
+        if (pickMode === "origin") {
+          setOrigin(data.coordinate);
+          setPickMode(null);
+        } else if (pickMode === "destination") {
+          setDestination(data.coordinate);
+          setPickMode(null);
+        }
+      } else if (data.type === "longPress") {
+        addReport("crash", data.coordinate);
+      } else if (data.type === "confirmReport") {
+        confirmReport(data.reportType, data.id, data.confirmCount);
+      }
+    } catch (e) {
+      console.log("خطا در پردازش پیام نقشه:", e);
+    }
   };
 
   return (
@@ -118,58 +144,21 @@ export default function MapScreen() {
         </TouchableOpacity>
       </View>
 
-      <MapView
+      <WebView
+        ref={webviewRef}
+        originWhitelist={["*"]}
+        source={{ html: getMapHtml() }}
+        onMessage={handleWebViewMessage}
         style={styles.map}
-        onPress={handleMapPress}
-        onLongPress={handleLongPressReport("crash")}
-        initialRegion={{
-          latitude: 35.6892,
-          longitude: 51.389,
-          latitudeDelta: 0.1,
-          longitudeDelta: 0.1,
-        }}
-      >
-        {origin && <Marker coordinate={origin} pinColor="green" title="مبدأ" />}
-        {destination && <Marker coordinate={destination} pinColor="red" title="مقصد" />}
-
-        {route && (
-          <Polyline coordinates={route.points} strokeWidth={5} strokeColor="#1e90ff" />
-        )}
-
-        {cameras.map((c) => (
-          <Marker key={c.id} coordinate={c.location} pinColor="orange" title="دوربین" />
-        ))}
-
-        {crashReports.map((r) => (
-          <Marker
-            key={r.id}
-            coordinate={r.location}
-            pinColor="black"
-            title="تصادف"
-            onCalloutPress={() => confirmReport("crash", r.id, r.confirmCount)}
-          />
-        ))}
-
-        {policeReports.map((r) => (
-          <Marker
-            key={r.id}
-            coordinate={r.location}
-            pinColor="purple"
-            title="پلیس"
-            onCalloutPress={() => confirmReport("police", r.id, r.confirmCount)}
-          />
-        ))}
-      </MapView>
+        javaScriptEnabled={true}
+        domStorageEnabled={true}
+      />
 
       <View style={styles.reportRow}>
-        <TouchableOpacity
-          onPress={() => origin && addReport("crash", origin)}
-        >
+        <TouchableOpacity onPress={() => origin && addReport("crash", origin)}>
           <Text style={styles.modeBtn}>🚗 گزارش تصادف</Text>
         </TouchableOpacity>
-        <TouchableOpacity
-          onPress={() => origin && addReport("police", origin)}
-        >
+        <TouchableOpacity onPress={() => origin && addReport("police", origin)}>
           <Text style={styles.modeBtn}>👮 گزارش پلیس</Text>
         </TouchableOpacity>
       </View>
