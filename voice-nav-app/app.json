@@ -4,6 +4,7 @@
     "slug": "voice-nav-app",
     "version": "1.0.0",
     "orientation": "portrait",
+    "icon": "./assets/icon.png",
     "splash": {
       "backgroundColor": "#1e90ff",
       "resizeMode": "contain"
@@ -15,6 +16,9 @@
         "ACCESS_COARSE_LOCATION",
         "FOREGROUND_SERVICE"
       ]
-    }
+    },
+    "plugins": [
+      "@maplibre/maplibre-react-native"
+    ]
   }
 }
