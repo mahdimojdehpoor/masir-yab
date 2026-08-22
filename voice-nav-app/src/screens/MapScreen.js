@@ -11,6 +11,7 @@ import * as Location from "expo-location";
 
 import ActionSheet from "../components/ActionSheet";
 import ReportBadge from "../components/ReportBadge";
+import CategoryBar from "../components/CategoryBar";
 import Signature from "../components/Signature";
 import { getRouteOptions, ROUTE_COLORS } from "../services/routingService";
 import {
@@ -20,22 +21,31 @@ import {
   denyReport,
 } from "../services/reportService";
 import { listenToCameras, checkCameraAlerts } from "../services/cameraService";
+import { searchNearby } from "../services/poiService";
 import { speak } from "../services/voiceService";
 
 export default function MapScreen() {
+  // موقعیت و مسیر
   const [myLocation, setMyLocation] = useState(null);
   const [origin, setOrigin] = useState(null);
   const [destination, setDestination] = useState(null);
   const [routes, setRoutes] = useState(null); // { shortest, quietest, amenities, combined }
   const [activeMethods, setActiveMethods] = useState(["combined"]); // چک‌باکس‌های فعال
+
+  // گزارش‌ها و دوربین‌ها
   const [crashReports, setCrashReports] = useState([]);
   const [policeReports, setPoliceReports] = useState([]);
   const [cameras, setCameras] = useState([]);
   const [marks, setMarks] = useState([]);
 
+  // جستجو
   const [searchQuery, setSearchQuery] = useState("");
   const [sheetVisible, setSheetVisible] = useState(false);
   const [pendingPoint, setPendingPoint] = useState(null);
+
+  // امکانات (POI)
+  const [activeCategory, setActiveCategory] = useState(null);
+  const [poiResults, setPoiResults] = useState([]);
 
   // موقعیت اولیه‌ی GPS
   useEffect(() => {
@@ -80,7 +90,7 @@ export default function MapScreen() {
     };
   }, [cameras]);
 
-  // محاسبه‌ی مسیرها
+  // محاسبه‌ی مسیرها هروقت مبدأ/مقصد/گزارش‌ها تغییر کنن
   useEffect(() => {
     if (origin && destination) {
       const activeReports = [...crashReports, ...policeReports];
@@ -93,6 +103,7 @@ export default function MapScreen() {
     }
   }, [origin, destination, crashReports, policeReports]);
 
+  // جستجوی مکان با Nominatim
   const search = async () => {
     if (!searchQuery.trim()) return;
     try {
@@ -107,17 +118,21 @@ export default function MapScreen() {
           longitude: parseFloat(data[0].lon),
         });
         setSheetVisible(true);
+      } else {
+        speak("موردی پیدا نشد");
       }
     } catch {
       speak("جستجو با خطا مواجه شد");
     }
   };
 
+  // لمس طولانی روی نقشه
   const handleLongPress = (e) => {
     setPendingPoint(e.nativeEvent.coordinate);
     setSheetVisible(true);
   };
 
+  // انتخاب از منوی Action Sheet
   const handleSheetSelect = (action) => {
     if (!pendingPoint) return;
     if (action === "origin") setOrigin(pendingPoint);
@@ -127,57 +142,27 @@ export default function MapScreen() {
     else if (action === "police") addReport("police", pendingPoint);
   };
 
+  // فعال/غیرفعال کردن هر معیار مسیر
   const toggleMethod = (key) => {
     setActiveMethods((prev) =>
       prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]
     );
   };
 
-  // پیدا کردن قسمت‌های مشترک بین مسیرهای انتخابی برای رنگ سبز اورلپ
-  const buildPolylines = useCallback(() => {
-    if (!routes || activeMethods.length === 0) return [];
-
-    const selected = activeMethods.map((k) => routes[k]).filter(Boolean);
-    if (selected.length === 1) {
-      return [{ points: selected[0].points, color: selected[0].color, key: selected[0].key }];
+  // جستجوی امکانات (هتل، بیمارستان، پلیس و...)
+  const handleCategorySelect = async (categoryKey) => {
+    setActiveCategory(categoryKey);
+    if (!categoryKey) {
+      setPoiResults([]);
+      return;
     }
-
-    // اگر بیش از یک مسیر انتخاب شده: هرجا نقاط نزدیک هم بودن (اورلپ) سبز می‌کنیم
-    const OVERLAP_METERS = 60;
-    const result = [];
-    const base = selected[0];
-
-    base.points.forEach((p, idx) => {
-      const isShared = selected.slice(1).every((other) =>
-        other.points.some((op) => distanceMeters(p, op) < OVERLAP_METERS)
-      );
-      result.push({ point: p, shared: isShared });
-    });
-
-    // تبدیل به سگمنت‌های رنگی پشت سر هم
-    const segments = [];
-    let currentColor = null;
-    let currentPoints = [];
-
-    result.forEach((r) => {
-      const color = r.shared ? "#2e7d32" : base.color; // سبز پررنگ برای اورلپ
-      if (color !== currentColor) {
-        if (currentPoints.length > 1) segments.push({ points: currentPoints, color: currentColor });
-        currentColor = color;
-        currentPoints = [r.point];
-      } else {
-        currentPoints.push(r.point);
-      }
-    });
-    if (currentPoints.length > 1) segments.push({ points: currentPoints, color: currentColor });
-
-    // بقیه‌ی مسیرهای انتخابی (غیر از base) هم به‌صورت کامل رسم می‌شن تا قسمت‌های غیرمشترکشون هم دیده بشه
-    selected.slice(1).forEach((r) => {
-      segments.push({ points: r.points, color: r.color });
-    });
-
-    return segments;
-  }, [routes, activeMethods]);
+    const center = myLocation || origin || { latitude: 35.6892, longitude: 51.389 };
+    const results = await searchNearby(categoryKey, center);
+    setPoiResults(results);
+    if (results.length === 0) {
+      speak("موردی در این نزدیکی پیدا نشد");
+    }
+  };
 
   function distanceMeters(a, b) {
     const R = 6371000;
@@ -191,6 +176,51 @@ export default function MapScreen() {
     return 2 * R * Math.asin(Math.sqrt(h));
   }
 
+  // ساخت خط‌های رنگی مسیر با درنظرگرفتن هم‌پوشانی (اورلپ = سبز)
+  const buildPolylines = useCallback(() => {
+    if (!routes || activeMethods.length === 0) return [];
+
+    const selected = activeMethods.map((k) => routes[k]).filter(Boolean);
+    if (selected.length === 0) return [];
+
+    if (selected.length === 1) {
+      return [{ points: selected[0].points, color: selected[0].color, key: selected[0].key }];
+    }
+
+    const OVERLAP_METERS = 60;
+    const base = selected[0];
+
+    const flagged = base.points.map((p) => {
+      const isShared = selected.slice(1).every((other) =>
+        other.points.some((op) => distanceMeters(p, op) < OVERLAP_METERS)
+      );
+      return { point: p, shared: isShared };
+    });
+
+    const segments = [];
+    let currentColor = null;
+    let currentPoints = [];
+
+    flagged.forEach((r) => {
+      const color = r.shared ? "#2e7d32" : base.color; // سبز پررنگ برای بخش مشترک
+      if (color !== currentColor) {
+        if (currentPoints.length > 1) segments.push({ points: currentPoints, color: currentColor });
+        currentColor = color;
+        currentPoints = [r.point];
+      } else {
+        currentPoints.push(r.point);
+      }
+    });
+    if (currentPoints.length > 1) segments.push({ points: currentPoints, color: currentColor });
+
+    // بقیه‌ی مسیرهای انتخابی هم کامل رسم می‌شن تا بخش‌های غیرمشترکشون هم دیده بشه
+    selected.slice(1).forEach((r) => {
+      segments.push({ points: r.points, color: r.color });
+    });
+
+    return segments;
+  }, [routes, activeMethods]);
+
   const methodOptions = [
     { key: "quietest", label: "خلوت‌ترین" },
     { key: "shortest", label: "کوتاه‌ترین" },
@@ -200,6 +230,7 @@ export default function MapScreen() {
 
   return (
     <View style={styles.container}>
+      {/* کادر جستجوی واحد */}
       <View style={styles.searchRow}>
         <TextInput
           style={styles.input}
@@ -213,6 +244,7 @@ export default function MapScreen() {
         </TouchableOpacity>
       </View>
 
+      {/* چک‌باکس‌های ۴ معیار مسیر */}
       <View style={styles.methodRow}>
         {methodOptions.map((m) => {
           const active = activeMethods.includes(m.key);
@@ -230,6 +262,9 @@ export default function MapScreen() {
           );
         })}
       </View>
+
+      {/* نوار دسته‌بندی امکانات */}
+      <CategoryBar activeCategory={activeCategory} onSelect={handleCategorySelect} />
 
       <MapView
         style={styles.map}
@@ -277,6 +312,19 @@ export default function MapScreen() {
             />
           </Marker>
         ))}
+
+        {poiResults.map((poi) => (
+          <Marker
+            key={poi.id}
+            coordinate={poi.location}
+            pinColor="teal"
+            title={poi.name}
+            onPress={() => {
+              setPendingPoint(poi.location);
+              setSheetVisible(true);
+            }}
+          />
+        ))}
       </MapView>
 
       <ActionSheet
@@ -304,7 +352,12 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
   },
   searchBtn: { backgroundColor: "#1e90ff", padding: 10, borderRadius: 8 },
-  methodRow: { flexDirection: "row", justifyContent: "space-around", paddingVertical: 6, backgroundColor: "#fff" },
-  checkboxRow: { flexDirection: "row", alignItems: "center", gap: 4 },
+  methodRow: {
+    flexDirection: "row",
+    justifyContent: "space-around",
+    paddingVertical: 6,
+    backgroundColor: "#fff",
+  },
+  checkboxRow: { flexDirection: "row", alignItems: "center", marginHorizontal: 2 },
   checkbox: { width: 16, height: 16, borderRadius: 4, borderWidth: 2, marginRight: 4 },
 });
