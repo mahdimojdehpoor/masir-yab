@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import {
   View,
   StyleSheet,
@@ -6,7 +6,7 @@ import {
   Text,
   TextInput,
 } from "react-native";
-import MapView, { Marker, Polyline } from "react-native-maps";
+import MapLibreGL from "@maplibre/maplibre-react-native";
 import * as Location from "expo-location";
 
 import ActionSheet from "../components/ActionSheet";
@@ -24,19 +24,27 @@ import { listenToCameras, checkCameraAlerts } from "../services/cameraService";
 import { searchNearby } from "../services/poiService";
 import { speak } from "../services/voiceService";
 
+MapLibreGL.setAccessToken(null);
+
+// استایل نقشه‌ی رایگان و بدون کلید (OpenFreeMap)
+const MAP_STYLE_URL = "https://tiles.openfreemap.org/styles/liberty";
+
 export default function MapScreen() {
+  const cameraRef = useRef(null);
+
   // موقعیت و مسیر
   const [myLocation, setMyLocation] = useState(null);
   const [origin, setOrigin] = useState(null);
   const [destination, setDestination] = useState(null);
-  const [routes, setRoutes] = useState(null); // { shortest, quietest, amenities, combined }
-  const [activeMethods, setActiveMethods] = useState(["combined"]); // چک‌باکس‌های فعال
+  const [routes, setRoutes] = useState(null);
+  const [activeMethods, setActiveMethods] = useState(["combined"]);
 
   // گزارش‌ها و دوربین‌ها
   const [crashReports, setCrashReports] = useState([]);
   const [policeReports, setPoliceReports] = useState([]);
   const [cameras, setCameras] = useState([]);
   const [marks, setMarks] = useState([]);
+  const [selectedReport, setSelectedReport] = useState(null); // { type, report }
 
   // جستجو
   const [searchQuery, setSearchQuery] = useState("");
@@ -90,7 +98,7 @@ export default function MapScreen() {
     };
   }, [cameras]);
 
-  // محاسبه‌ی مسیرها هروقت مبدأ/مقصد/گزارش‌ها تغییر کنن
+  // محاسبه‌ی مسیرها
   useEffect(() => {
     if (origin && destination) {
       const activeReports = [...crashReports, ...policeReports];
@@ -103,7 +111,7 @@ export default function MapScreen() {
     }
   }, [origin, destination, crashReports, policeReports]);
 
-  // جستجوی مکان با Nominatim
+  // جستجوی مکان
   const search = async () => {
     if (!searchQuery.trim()) return;
     try {
@@ -113,11 +121,17 @@ export default function MapScreen() {
       const res = await fetch(url, { headers: { "User-Agent": "VoiceNavApp" } });
       const data = await res.json();
       if (data.length > 0) {
-        setPendingPoint({
+        const point = {
           latitude: parseFloat(data[0].lat),
           longitude: parseFloat(data[0].lon),
-        });
+        };
+        setPendingPoint(point);
         setSheetVisible(true);
+        cameraRef.current?.setCamera({
+          centerCoordinate: [point.longitude, point.latitude],
+          zoomLevel: 14,
+          animationDuration: 800,
+        });
       } else {
         speak("موردی پیدا نشد");
       }
@@ -127,12 +141,12 @@ export default function MapScreen() {
   };
 
   // لمس طولانی روی نقشه
-  const handleLongPress = (e) => {
-    setPendingPoint(e.nativeEvent.coordinate);
+  const handleLongPress = (feature) => {
+    const [lng, lat] = feature.geometry.coordinates;
+    setPendingPoint({ latitude: lat, longitude: lng });
     setSheetVisible(true);
   };
 
-  // انتخاب از منوی Action Sheet
   const handleSheetSelect = (action) => {
     if (!pendingPoint) return;
     if (action === "origin") setOrigin(pendingPoint);
@@ -142,14 +156,12 @@ export default function MapScreen() {
     else if (action === "police") addReport("police", pendingPoint);
   };
 
-  // فعال/غیرفعال کردن هر معیار مسیر
   const toggleMethod = (key) => {
     setActiveMethods((prev) =>
       prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]
     );
   };
 
-  // جستجوی امکانات (هتل، بیمارستان، پلیس و...)
   const handleCategorySelect = async (categoryKey) => {
     setActiveCategory(categoryKey);
     if (!categoryKey) {
@@ -176,7 +188,7 @@ export default function MapScreen() {
     return 2 * R * Math.asin(Math.sqrt(h));
   }
 
-  // ساخت خط‌های رنگی مسیر با درنظرگرفتن هم‌پوشانی (اورلپ = سبز)
+  // ساخت سگمنت‌های رنگی مسیر (اورلپ = سبز)
   const buildPolylines = useCallback(() => {
     if (!routes || activeMethods.length === 0) return [];
 
@@ -202,7 +214,7 @@ export default function MapScreen() {
     let currentPoints = [];
 
     flagged.forEach((r) => {
-      const color = r.shared ? "#2e7d32" : base.color; // سبز پررنگ برای بخش مشترک
+      const color = r.shared ? "#2e7d32" : base.color;
       if (color !== currentColor) {
         if (currentPoints.length > 1) segments.push({ points: currentPoints, color: currentColor });
         currentColor = color;
@@ -213,7 +225,6 @@ export default function MapScreen() {
     });
     if (currentPoints.length > 1) segments.push({ points: currentPoints, color: currentColor });
 
-    // بقیه‌ی مسیرهای انتخابی هم کامل رسم می‌شن تا بخش‌های غیرمشترکشون هم دیده بشه
     selected.slice(1).forEach((r) => {
       segments.push({ points: r.points, color: r.color });
     });
@@ -221,12 +232,25 @@ export default function MapScreen() {
     return segments;
   }, [routes, activeMethods]);
 
+  // تبدیل نقاط به GeoJSON برای MapLibre
+  const toGeoJSON = (points) => ({
+    type: "Feature",
+    geometry: {
+      type: "LineString",
+      coordinates: points.map((p) => [p.longitude, p.latitude]),
+    },
+  });
+
   const methodOptions = [
     { key: "quietest", label: "خلوت‌ترین" },
     { key: "shortest", label: "کوتاه‌ترین" },
     { key: "amenities", label: "پرامکانات‌ترین" },
     { key: "combined", label: "ترکیبی" },
   ];
+
+  const initialCenter = myLocation
+    ? [myLocation.longitude, myLocation.latitude]
+    : [51.389, 35.6892];
 
   return (
     <View style={styles.container}>
@@ -263,69 +287,130 @@ export default function MapScreen() {
         })}
       </View>
 
-      {/* نوار دسته‌بندی امکانات */}
       <CategoryBar activeCategory={activeCategory} onSelect={handleCategorySelect} />
 
-      <MapView
+      <MapLibreGL.MapView
         style={styles.map}
+        styleURL={MAP_STYLE_URL}
         onLongPress={handleLongPress}
-        initialRegion={
-          myLocation
-            ? { ...myLocation, latitudeDelta: 0.05, longitudeDelta: 0.05 }
-            : { latitude: 35.6892, longitude: 51.389, latitudeDelta: 0.1, longitudeDelta: 0.1 }
-        }
-        showsUserLocation
+        logoEnabled={false}
+        attributionEnabled={true}
       >
-        {origin && <Marker coordinate={origin} pinColor="green" title="مبدأ" />}
-        {destination && <Marker coordinate={destination} pinColor="red" title="مقصد" />}
+        <MapLibreGL.Camera
+          ref={cameraRef}
+          zoomLevel={13}
+          centerCoordinate={initialCenter}
+        />
+
+        <MapLibreGL.UserLocation visible={true} />
+
+        {origin && (
+          <MapLibreGL.PointAnnotation
+            id="origin"
+            coordinate={[origin.longitude, origin.latitude]}
+          >
+            <View style={[styles.dot, { backgroundColor: "#2e7d32" }]} />
+          </MapLibreGL.PointAnnotation>
+        )}
+
+        {destination && (
+          <MapLibreGL.PointAnnotation
+            id="destination"
+            coordinate={[destination.longitude, destination.latitude]}
+          >
+            <View style={[styles.dot, { backgroundColor: "#e53935" }]} />
+          </MapLibreGL.PointAnnotation>
+        )}
 
         {marks.map((m, idx) => (
-          <Marker key={`mark-${idx}`} coordinate={m} pinColor="gold" title="نشانه" />
+          <MapLibreGL.PointAnnotation
+            key={`mark-${idx}`}
+            id={`mark-${idx}`}
+            coordinate={[m.longitude, m.latitude]}
+          >
+            <View style={[styles.dot, { backgroundColor: "#f9a825" }]} />
+          </MapLibreGL.PointAnnotation>
         ))}
 
         {buildPolylines().map((seg, idx) => (
-          <Polyline key={idx} coordinates={seg.points} strokeWidth={5} strokeColor={seg.color} />
+          <MapLibreGL.ShapeSource key={`route-${idx}`} id={`route-src-${idx}`} shape={toGeoJSON(seg.points)}>
+            <MapLibreGL.LineLayer
+              id={`route-line-${idx}`}
+              style={{ lineColor: seg.color, lineWidth: 5, lineCap: "round", lineJoin: "round" }}
+            />
+          </MapLibreGL.ShapeSource>
         ))}
 
         {cameras.map((c) => (
-          <Marker key={c.id} coordinate={c.location} pinColor="orange" title="دوربین سرعت" />
+          <MapLibreGL.PointAnnotation
+            key={c.id}
+            id={`cam-${c.id}`}
+            coordinate={[c.location.longitude, c.location.latitude]}
+          >
+            <View style={[styles.dot, { backgroundColor: "#fb8c00" }]} />
+          </MapLibreGL.PointAnnotation>
         ))}
 
         {crashReports.map((r) => (
-          <Marker key={r.id} coordinate={r.location} pinColor="black">
-            <ReportBadge
-              label="🚗 تصادف"
-              report={r}
-              onConfirm={() => confirmReport("crash", r.id, r.confirmCount || 0)}
-              onDeny={() => denyReport("crash", r.id, r.denyCount || 0)}
-            />
-          </Marker>
+          <MapLibreGL.PointAnnotation
+            key={r.id}
+            id={`crash-${r.id}`}
+            coordinate={[r.location.longitude, r.location.latitude]}
+            onSelected={() => setSelectedReport({ type: "crash", report: r })}
+          >
+            <View style={[styles.dot, { backgroundColor: "#000" }]} />
+          </MapLibreGL.PointAnnotation>
         ))}
 
         {policeReports.map((r) => (
-          <Marker key={r.id} coordinate={r.location} pinColor="purple">
-            <ReportBadge
-              label="👮 ایست پلیس"
-              report={r}
-              onConfirm={() => confirmReport("police", r.id, r.confirmCount || 0)}
-              onDeny={() => denyReport("police", r.id, r.denyCount || 0)}
-            />
-          </Marker>
+          <MapLibreGL.PointAnnotation
+            key={r.id}
+            id={`police-${r.id}`}
+            coordinate={[r.location.longitude, r.location.latitude]}
+            onSelected={() => setSelectedReport({ type: "police", report: r })}
+          >
+            <View style={[styles.dot, { backgroundColor: "#8e24aa" }]} />
+          </MapLibreGL.PointAnnotation>
         ))}
 
         {poiResults.map((poi) => (
-          <Marker
+          <MapLibreGL.PointAnnotation
             key={poi.id}
-            coordinate={poi.location}
-            pinColor="teal"
-            title={poi.name}
-            onPress={() => {
+            id={`poi-${poi.id}`}
+            coordinate={[poi.location.longitude, poi.location.latitude]}
+            onSelected={() => {
               setPendingPoint(poi.location);
               setSheetVisible(true);
             }}
-          />
+          >
+            <View style={[styles.dot, { backgroundColor: "#00897b" }]} />
+          </MapLibreGL.PointAnnotation>
         ))}
-      </MapView>
+      </MapLibreGL.MapView>
+
+      {selectedReport && (
+        <ReportBadge
+          label={selectedReport.type === "crash" ? "🚗 تصادف" : "👮 ایست پلیس"}
+          report={selectedReport.report}
+          onConfirm={() => {
+            confirmReport(
+              selectedReport.type,
+              selectedReport.report.id,
+              selectedReport.report.confirmCount || 0
+            );
+            setSelectedReport(null);
+          }}
+          onDeny={() => {
+            denyReport(
+              selectedReport.type,
+              selectedReport.report.id,
+              selectedReport.report.denyCount || 0
+            );
+            setSelectedReport(null);
+          }}
+          onClose={() => setSelectedReport(null)}
+        />
+      )}
 
       <ActionSheet
         visible={sheetVisible}
@@ -360,4 +445,11 @@ const styles = StyleSheet.create({
   },
   checkboxRow: { flexDirection: "row", alignItems: "center", marginHorizontal: 2 },
   checkbox: { width: 16, height: 16, borderRadius: 4, borderWidth: 2, marginRight: 4 },
+  dot: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    borderWidth: 2,
+    borderColor: "#fff",
+  },
 });
