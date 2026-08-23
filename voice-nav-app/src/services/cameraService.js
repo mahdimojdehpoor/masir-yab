@@ -7,15 +7,23 @@ import { speak } from "./voiceService";
 const WARN_DISTANCE_METERS = 400;
 
 export function listenToCameras(callback) {
-  return onSnapshot(collection(db, "cameras"), (snapshot) => {
-    const cameras = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
-    callback(cameras);
-  });
+  return onSnapshot(
+    collection(db, "cameras"),
+    (snapshot) => {
+      const cameras = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+      callback(cameras);
+    },
+    (error) => {
+      console.log("Firestore camera listen error:", error.message);
+      callback([]);
+    }
+  );
 }
 
 // این تابع رو داخل watchPosition صدا بزن (هر بار موقعیت جدید اومد)
 export function checkCameraAlerts(currentLocation, currentSpeedKmh, cameras) {
   for (const cam of cameras) {
+    if (!cam.location || typeof cam.location.longitude !== "number") continue;
     const dist = distanceMeters(currentLocation, cam.location);
     if (dist < WARN_DISTANCE_METERS && currentSpeedKmh > cam.speedLimit) {
       speak(`دوربین سرعت در مسیر، سرعت مجاز ${cam.speedLimit} کیلومتر`);
