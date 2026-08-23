@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useRef } from "react";
+import React, { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import {
   View,
   StyleSheet,
@@ -30,6 +30,10 @@ export default function MapScreen() {
   const webviewRef = useRef(null);
   const mapReadyRef = useRef(false);
   const hasCenteredRef = useRef(false);
+
+  // مهم: HTML نقشه فقط یک‌بار ساخته می‌شه و هیچ‌وقت دوباره نمی‌سازیمش،
+  // وگرنه هر رندر باعث می‌شه WebView کل صفحه رو از نو لود کنه (همون "پرش")
+  const mapHtmlContent = useMemo(() => getMapHtml(), []);
 
   const [myLocation, setMyLocation] = useState(null);
   const [origin, setOrigin] = useState(null);
@@ -77,6 +81,7 @@ export default function MapScreen() {
               speedKmh,
               cameras
             );
+            setMyLocation({ latitude: l.coords.latitude, longitude: l.coords.longitude });
           }
         );
       } catch (e) {
@@ -106,7 +111,7 @@ export default function MapScreen() {
     }
   }, [myLocation]);
 
-  // هر بار داده‌های نقشه تغییر کنه، به WebView بفرست
+  // هر بار داده‌های نقشه تغییر کنه، فقط داده رو به‌روزرسانی می‌کنیم (نه کل صفحه)
   useEffect(() => {
     if (!mapReadyRef.current) return;
     const payload = {
@@ -158,19 +163,42 @@ export default function MapScreen() {
     }
   }, [origin, destination, crashReports, policeReports]);
 
-  // جستجوی مکان
+  function distanceMeters(a, b) {
+    const R = 6371000;
+    const dLat = ((b.latitude - a.latitude) * Math.PI) / 180;
+    const dLng = ((b.longitude - a.longitude) * Math.PI) / 180;
+    const lat1 = (a.latitude * Math.PI) / 180;
+    const lat2 = (b.latitude * Math.PI) / 180;
+    const h =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(h));
+  }
+
+  // جستجوی مکان — چند نتیجه می‌گیریم و نزدیک‌ترین به موقعیت خودمون رو انتخاب می‌کنیم
   const search = async () => {
     if (!searchQuery.trim()) return;
     try {
       const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(
         searchQuery
-      )}&format=json&limit=1`;
+      )}&format=json&limit=8&countrycodes=ir`;
       const res = await fetchWithTimeout(url, { headers: { "User-Agent": "VoiceNavApp" } }, 8000, 2);
       const data = await res.json();
       if (data.length > 0) {
+        const center = myLocation || { latitude: 35.6892, longitude: 51.389 };
+        let best = data[0];
+        let bestDist = Infinity;
+        for (const item of data) {
+          const p = { latitude: parseFloat(item.lat), longitude: parseFloat(item.lon) };
+          const d = distanceMeters(center, p);
+          if (d < bestDist) {
+            bestDist = d;
+            best = item;
+          }
+        }
         const point = {
-          latitude: parseFloat(data[0].lat),
-          longitude: parseFloat(data[0].lon),
+          latitude: parseFloat(best.lat),
+          longitude: parseFloat(best.lon),
         };
         setPendingPoint(point);
         setSheetVisible(true);
@@ -244,18 +272,6 @@ export default function MapScreen() {
       speak("موردی در این نزدیکی پیدا نشد");
     }
   };
-
-  function distanceMeters(a, b) {
-    const R = 6371000;
-    const dLat = ((b.latitude - a.latitude) * Math.PI) / 180;
-    const dLng = ((b.longitude - a.longitude) * Math.PI) / 180;
-    const lat1 = (a.latitude * Math.PI) / 180;
-    const lat2 = (b.latitude * Math.PI) / 180;
-    const h =
-      Math.sin(dLat / 2) ** 2 +
-      Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
-    return 2 * R * Math.asin(Math.sqrt(h));
-  }
 
   const buildPolylines = useCallback(() => {
     if (!routes || activeMethods.length === 0) return [];
@@ -372,7 +388,7 @@ export default function MapScreen() {
         <WebView
           ref={webviewRef}
           originWhitelist={["*"]}
-          source={{ html: getMapHtml() }}
+          source={{ html: mapHtmlContent }}
           onMessage={handleWebViewMessage}
           style={styles.map}
           javaScriptEnabled
