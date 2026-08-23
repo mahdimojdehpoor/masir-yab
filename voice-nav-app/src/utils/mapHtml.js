@@ -17,7 +17,7 @@ export function getMapHtml() {
   <div id="map"></div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
-    var map = L.map('map', { zoomControl: false }).setView([35.6892, 51.389], 13);
+    var map = L.map('map', { zoomControl: false, tap: true, tapTolerance: 15 }).setView([35.6892, 51.389], 13);
 
     var tileLayers = {
       street: L.tileLayer('https://a.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -52,7 +52,6 @@ export function getMapHtml() {
       }
     }
 
-    // لایه‌ی جداگانه برای هرکدوم تا بشه راحت پاک/بازسازی کرد
     var markersLayer = L.layerGroup().addTo(map);
     var routesLayer = L.layerGroup().addTo(map);
     var userMarker = null;
@@ -106,36 +105,10 @@ export function getMapHtml() {
       });
     }
 
-    // تشخیص لمس طولانی (long press) روی نقشه
-    var pressTimer = null;
-    var pressStart = null;
-    var moved = false;
-
-    function startPress(latlng) {
-      moved = false;
-      pressStart = latlng;
-      pressTimer = setTimeout(function () {
-        if (!moved && pressStart) {
-          send({ type: 'longpress', lat: pressStart.lat, lng: pressStart.lng });
-        }
-      }, 600);
-    }
-
-    function cancelPress() {
-      if (pressTimer) clearTimeout(pressTimer);
-      pressTimer = null;
-      pressStart = null;
-    }
-
-    map.on('mousedown', function (e) { startPress(e.latlng); });
-    map.on('touchstart', function (e) {
-      if (e.latlng) startPress(e.latlng);
+    // روش استاندارد Leaflet برای لمس طولانی: خودش لمس طولانی رو به رویداد contextmenu تبدیل می‌کنه
+    map.on('contextmenu', function (e) {
+      send({ type: 'longpress', lat: e.latlng.lat, lng: e.latlng.lng });
     });
-    map.on('mousemove', function () { moved = true; });
-    map.on('drag', function () { moved = true; });
-    map.on('mouseup', cancelPress);
-    map.on('touchend', cancelPress);
-    map.on('touchcancel', cancelPress);
 
     send({ type: 'ready' });
   </script>
