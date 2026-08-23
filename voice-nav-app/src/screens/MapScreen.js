@@ -30,9 +30,9 @@ export default function MapScreen() {
   const webviewRef = useRef(null);
   const mapReadyRef = useRef(false);
   const hasCenteredRef = useRef(false);
+  const searchFocusedRef = useRef(false); // وقتی کاربر داره تایپ می‌کنه، آپدیت نقشه رو موقتاً نگه می‌داریم
 
-  // مهم: HTML نقشه فقط یک‌بار ساخته می‌شه و هیچ‌وقت دوباره نمی‌سازیمش،
-  // وگرنه هر رندر باعث می‌شه WebView کل صفحه رو از نو لود کنه (همون "پرش")
+  // HTML نقشه فقط یک‌بار ساخته می‌شه تا WebView مدام ری‌لود نشه
   const mapHtmlContent = useMemo(() => getMapHtml(), []);
 
   const [myLocation, setMyLocation] = useState(null);
@@ -73,7 +73,7 @@ export default function MapScreen() {
         setMyLocation(loc);
 
         sub = await Location.watchPositionAsync(
-          { accuracy: Location.Accuracy.High, timeInterval: 3000, distanceInterval: 10 },
+          { accuracy: Location.Accuracy.High, timeInterval: 3000, distanceInterval: 15 },
           (l) => {
             const speedKmh = (l.coords.speed || 0) * 3.6;
             checkCameraAlerts(
@@ -81,7 +81,10 @@ export default function MapScreen() {
               speedKmh,
               cameras
             );
-            setMyLocation({ latitude: l.coords.latitude, longitude: l.coords.longitude });
+            // اگه کاربر داره تایپ می‌کنه، فعلاً موقعیت رو آپدیت نکن تا کیبورد نپره
+            if (!searchFocusedRef.current) {
+              setMyLocation({ latitude: l.coords.latitude, longitude: l.coords.longitude });
+            }
           }
         );
       } catch (e) {
@@ -101,7 +104,7 @@ export default function MapScreen() {
     };
   }, [cameras]);
 
-  // فقط یک‌بار، وقتی GPS واقعی رسید و نقشه آماده بود، بریم روی موقعیت
+  // فقط یک‌بار، وقتی GPS واقعی رسید و نقشه آماده بود
   useEffect(() => {
     if (myLocation && mapReadyRef.current && !hasCenteredRef.current) {
       hasCenteredRef.current = true;
@@ -111,9 +114,10 @@ export default function MapScreen() {
     }
   }, [myLocation]);
 
-  // هر بار داده‌های نقشه تغییر کنه، فقط داده رو به‌روزرسانی می‌کنیم (نه کل صفحه)
+  // آپدیت داده‌های نقشه — اگه کاربر داره تایپ می‌کنه، صبر می‌کنیم
   useEffect(() => {
     if (!mapReadyRef.current) return;
+    if (searchFocusedRef.current) return;
     const payload = {
       myLocation,
       origin,
@@ -175,17 +179,19 @@ export default function MapScreen() {
     return 2 * R * Math.asin(Math.sqrt(h));
   }
 
-  // جستجوی مکان — چند نتیجه می‌گیریم و نزدیک‌ترین به موقعیت خودمون رو انتخاب می‌کنیم
+  // جستجوی مکان — محدوده رو دور موقعیت خودمون می‌بندیم تا نتایج شهر درست بیاد، نه شهر دیگه با اسم مشابه
   const search = async () => {
     if (!searchQuery.trim()) return;
     try {
+      const center = myLocation || { latitude: 35.6892, longitude: 51.389 };
+      const delta = 1.5; // حدود ۱۶۰ کیلومتر اطراف موقعیت فعلی
+      const viewbox = `${center.longitude - delta},${center.latitude + delta},${center.longitude + delta},${center.latitude - delta}`;
       const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(
         searchQuery
-      )}&format=json&limit=8&countrycodes=ir`;
+      )}&format=json&limit=20&countrycodes=ir&viewbox=${viewbox}&bounded=0`;
       const res = await fetchWithTimeout(url, { headers: { "User-Agent": "VoiceNavApp" } }, 8000, 2);
       const data = await res.json();
       if (data.length > 0) {
-        const center = myLocation || { latitude: 35.6892, longitude: 51.389 };
         let best = data[0];
         let bestDist = Infinity;
         for (const item of data) {
@@ -213,7 +219,6 @@ export default function MapScreen() {
     }
   };
 
-  // دریافت پیام از WebView (لمس طولانی و کلیک روی مارکرها)
   const handleWebViewMessage = (event) => {
     try {
       const msg = JSON.parse(event.nativeEvent.data);
@@ -338,6 +343,12 @@ export default function MapScreen() {
           value={searchQuery}
           onChangeText={setSearchQuery}
           onSubmitEditing={search}
+          onFocus={() => {
+            searchFocusedRef.current = true;
+          }}
+          onBlur={() => {
+            searchFocusedRef.current = false;
+          }}
         />
         <TouchableOpacity onPress={search} style={styles.searchBtn}>
           <Text style={{ color: "#fff" }}>جستجو</Text>
