@@ -31,6 +31,7 @@ const MAP_STYLE_URL = "https://tiles.openfreemap.org/styles/liberty";
 
 export default function MapScreen() {
   const cameraRef = useRef(null);
+  const hasCenteredRef = useRef(false);
 
   // موقعیت و مسیر
   const [myLocation, setMyLocation] = useState(null);
@@ -97,6 +98,19 @@ export default function MapScreen() {
       unsubCam();
     };
   }, [cameras]);
+
+  // فقط یک‌بار، وقتی موقعیت واقعی GPS رسید، دوربین نقشه رو ببر روی همون نقطه
+  // (این جدا از initialCenter هست تا با هر آپدیت GPS نقشه مدام برنگرده و زوم/جابه‌جایی دستی کاربر خراب نشه)
+  useEffect(() => {
+    if (myLocation && !hasCenteredRef.current && cameraRef.current) {
+      hasCenteredRef.current = true;
+      cameraRef.current.setCamera({
+        centerCoordinate: [myLocation.longitude, myLocation.latitude],
+        zoomLevel: 14,
+        animationDuration: 500,
+      });
+    }
+  }, [myLocation]);
 
   // محاسبه‌ی مسیرها
   useEffect(() => {
