@@ -6,13 +6,14 @@ import {
   Text,
   TextInput,
 } from "react-native";
-import MapLibreGL from "@maplibre/maplibre-react-native";
+import { WebView } from "react-native-webview";
 import * as Location from "expo-location";
 
 import ActionSheet from "../components/ActionSheet";
 import ReportBadge from "../components/ReportBadge";
 import CategoryBar from "../components/CategoryBar";
 import Signature from "../components/Signature";
+import { getMapHtml } from "../mapHtml";
 import { getRouteOptions, ROUTE_COLORS } from "../services/routingService";
 import {
   listenToReports,
@@ -25,89 +26,31 @@ import { searchNearby } from "../services/poiService";
 import { speak } from "../services/voiceService";
 import { fetchWithTimeout } from "../utils/fetchWithTimeout";
 
-MapLibreGL.setAccessToken(null);
-
-// حالت‌های مختلف نقشه — همه رایگان، بدون کلید، و به‌صورت raster (پایدارتر از vector)
-const STREET_STYLE_JSON = JSON.stringify({
-  version: 8,
-  sources: {
-    osm: {
-      type: "raster",
-      tiles: [
-        "https://a.tile.openstreetmap.org/{z}/{x}/{y}.png",
-        "https://b.tile.openstreetmap.org/{z}/{x}/{y}.png",
-        "https://c.tile.openstreetmap.org/{z}/{x}/{y}.png",
-      ],
-      tileSize: 256,
-      attribution: "© OpenStreetMap contributors",
-    },
-  },
-  layers: [{ id: "osm-layer", type: "raster", source: "osm" }],
-});
-
-const SATELLITE_STYLE_JSON = JSON.stringify({
-  version: 8,
-  sources: {
-    esri: {
-      type: "raster",
-      tiles: [
-        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-      ],
-      tileSize: 256,
-      attribution: "Esri, Maxar, Earthstar Geographics",
-    },
-  },
-  layers: [{ id: "esri-satellite", type: "raster", source: "esri" }],
-});
-
-const TOPO_STYLE_JSON = JSON.stringify({
-  version: 8,
-  sources: {
-    otm: {
-      type: "raster",
-      tiles: ["https://a.tile.opentopomap.org/{z}/{x}/{y}.png"],
-      tileSize: 256,
-      attribution: "OpenTopoMap (CC-BY-SA)",
-    },
-  },
-  layers: [{ id: "otm-layer", type: "raster", source: "otm" }],
-});
-
-const MAP_MODES = {
-  street: { label: "خیابانی", styleJSON: STREET_STYLE_JSON },
-  satellite: { label: "ماهواره‌ای", styleJSON: SATELLITE_STYLE_JSON },
-  topo: { label: "توپوگرافی", styleJSON: TOPO_STYLE_JSON },
-};
-
 export default function MapScreen() {
-  const cameraRef = useRef(null);
+  const webviewRef = useRef(null);
+  const mapReadyRef = useRef(false);
   const hasCenteredRef = useRef(false);
 
-  // موقعیت و مسیر
   const [myLocation, setMyLocation] = useState(null);
   const [origin, setOrigin] = useState(null);
   const [destination, setDestination] = useState(null);
   const [routes, setRoutes] = useState(null);
   const [activeMethods, setActiveMethods] = useState(["combined"]);
 
-  // گزارش‌ها و دوربین‌ها
   const [crashReports, setCrashReports] = useState([]);
   const [policeReports, setPoliceReports] = useState([]);
   const [cameras, setCameras] = useState([]);
   const [marks, setMarks] = useState([]);
   const [selectedReport, setSelectedReport] = useState(null);
 
-  // جستجو
   const [searchQuery, setSearchQuery] = useState("");
   const [sheetVisible, setSheetVisible] = useState(false);
   const [pendingPoint, setPendingPoint] = useState(null);
 
-  // امکانات (POI)
   const [activeCategory, setActiveCategory] = useState(null);
   const [poiResults, setPoiResults] = useState([]);
   const [loadingCategory, setLoadingCategory] = useState(false);
 
-  // حالت نقشه
   const [mapMode, setMapMode] = useState("street");
 
   // موقعیت اولیه‌ی GPS
@@ -153,26 +96,50 @@ export default function MapScreen() {
     };
   }, [cameras]);
 
-  // فقط یک‌بار، وقتی GPS واقعی رسید، دوربین رو ببر روی همون نقطه
+  // فقط یک‌بار، وقتی GPS واقعی رسید و نقشه آماده بود، بریم روی موقعیت
   useEffect(() => {
-    if (myLocation && !hasCenteredRef.current && cameraRef.current) {
+    if (myLocation && mapReadyRef.current && !hasCenteredRef.current) {
       hasCenteredRef.current = true;
-      cameraRef.current.setCamera({
-        centerCoordinate: [myLocation.longitude, myLocation.latitude],
-        zoomLevel: 16,
-        animationDuration: 500,
-      });
+      webviewRef.current?.injectJavaScript(
+        `flyTo(${myLocation.latitude}, ${myLocation.longitude}, 16); true;`
+      );
     }
   }, [myLocation]);
 
-  // دکمه‌ی «موقعیت من»
+  // هر بار داده‌های نقشه تغییر کنه، به WebView بفرست
+  useEffect(() => {
+    if (!mapReadyRef.current) return;
+    const payload = {
+      myLocation,
+      origin,
+      destination,
+      marks,
+      cameras: safeFilter(cameras),
+      crashReports: safeFilter(crashReports),
+      policeReports: safeFilter(policeReports),
+      poiResults: safeFilter(poiResults),
+      routeSegments: buildPolylines(),
+    };
+    webviewRef.current?.injectJavaScript(
+      `updateData(${JSON.stringify(payload)}); true;`
+    );
+  }, [myLocation, origin, destination, marks, cameras, crashReports, policeReports, poiResults, routes, activeMethods]);
+
+  // سوییچ حالت نقشه
+  useEffect(() => {
+    if (!mapReadyRef.current) return;
+    webviewRef.current?.injectJavaScript(`setTileLayer('${mapMode}'); true;`);
+  }, [mapMode]);
+
+  function safeFilter(arr) {
+    return arr.filter((item) => item.location && typeof item.location.longitude === "number");
+  }
+
   const goToMyLocation = () => {
-    if (myLocation && cameraRef.current) {
-      cameraRef.current.setCamera({
-        centerCoordinate: [myLocation.longitude, myLocation.latitude],
-        zoomLevel: 16,
-        animationDuration: 600,
-      });
+    if (myLocation) {
+      webviewRef.current?.injectJavaScript(
+        `flyTo(${myLocation.latitude}, ${myLocation.longitude}, 16); true;`
+      );
     } else {
       speak("موقعیت هنوز دریافت نشده");
     }
@@ -207,11 +174,9 @@ export default function MapScreen() {
         };
         setPendingPoint(point);
         setSheetVisible(true);
-        cameraRef.current?.setCamera({
-          centerCoordinate: [point.longitude, point.latitude],
-          zoomLevel: 15,
-          animationDuration: 800,
-        });
+        webviewRef.current?.injectJavaScript(
+          `flyTo(${point.latitude}, ${point.longitude}, 15); true;`
+        );
       } else {
         speak("موردی پیدا نشد");
       }
@@ -220,10 +185,33 @@ export default function MapScreen() {
     }
   };
 
-  const handleLongPress = (feature) => {
-    const [lng, lat] = feature.geometry.coordinates;
-    setPendingPoint({ latitude: lat, longitude: lng });
-    setSheetVisible(true);
+  // دریافت پیام از WebView (لمس طولانی و کلیک روی مارکرها)
+  const handleWebViewMessage = (event) => {
+    try {
+      const msg = JSON.parse(event.nativeEvent.data);
+      if (msg.type === "ready") {
+        mapReadyRef.current = true;
+      } else if (msg.type === "longpress") {
+        setPendingPoint({ latitude: msg.lat, longitude: msg.lng });
+        setSheetVisible(true);
+      } else if (msg.type === "marker") {
+        if (msg.kind === "crash") {
+          const r = crashReports.find((x) => x.id === msg.id);
+          if (r) setSelectedReport({ type: "crash", report: r });
+        } else if (msg.kind === "police") {
+          const r = policeReports.find((x) => x.id === msg.id);
+          if (r) setSelectedReport({ type: "police", report: r });
+        } else if (msg.kind === "poi") {
+          const p = poiResults.find((x) => x.id === msg.id);
+          if (p) {
+            setPendingPoint(p.location);
+            setSheetVisible(true);
+          }
+        }
+      }
+    } catch (e) {
+      console.log("WebView message parse error:", e.message);
+    }
   };
 
   const handleSheetSelect = (action) => {
@@ -276,7 +264,7 @@ export default function MapScreen() {
     if (selected.length === 0) return [];
 
     if (selected.length === 1) {
-      return [{ points: selected[0].points, color: selected[0].color, key: selected[0].key }];
+      return [{ points: selected[0].points, color: selected[0].color }];
     }
 
     const OVERLAP_METERS = 60;
@@ -312,14 +300,6 @@ export default function MapScreen() {
     return segments;
   }, [routes, activeMethods]);
 
-  const toGeoJSON = (points) => ({
-    type: "Feature",
-    geometry: {
-      type: "LineString",
-      coordinates: points.map((p) => [p.longitude, p.latitude]),
-    },
-  });
-
   const methodOptions = [
     { key: "quietest", label: "خلوت‌ترین" },
     { key: "shortest", label: "کوتاه‌ترین" },
@@ -327,16 +307,11 @@ export default function MapScreen() {
     { key: "combined", label: "ترکیبی" },
   ];
 
-  const initialCenter = myLocation
-    ? [myLocation.longitude, myLocation.latitude]
-    : [51.389, 35.6892];
-
-  const safeCameras = cameras.filter((c) => c.location && typeof c.location.longitude === "number");
-  const safeCrash = crashReports.filter((r) => r.location && typeof r.location.longitude === "number");
-  const safePolice = policeReports.filter((r) => r.location && typeof r.location.longitude === "number");
-  const safePoi = poiResults.filter((p) => p.location && typeof p.location.longitude === "number");
-
-  const currentMode = MAP_MODES[mapMode];
+  const mapModeOptions = [
+    { key: "street", label: "خیابانی" },
+    { key: "satellite", label: "ماهواره‌ای" },
+    { key: "topo", label: "توپوگرافی" },
+  ];
 
   return (
     <View style={styles.container}>
@@ -372,13 +347,13 @@ export default function MapScreen() {
       </View>
 
       <View style={styles.mapModeRow}>
-        {Object.entries(MAP_MODES).map(([key, mode]) => (
+        {mapModeOptions.map((mode) => (
           <TouchableOpacity
-            key={key}
-            onPress={() => setMapMode(key)}
-            style={[styles.mapModeBtn, mapMode === key && styles.mapModeBtnActive]}
+            key={mode.key}
+            onPress={() => setMapMode(mode.key)}
+            style={[styles.mapModeBtn, mapMode === mode.key && styles.mapModeBtnActive]}
           >
-            <Text style={[styles.mapModeText, mapMode === key && styles.mapModeTextActive]}>
+            <Text style={[styles.mapModeText, mapMode === mode.key && styles.mapModeTextActive]}>
               {mode.label}
             </Text>
           </TouchableOpacity>
@@ -394,92 +369,16 @@ export default function MapScreen() {
       )}
 
       <View style={styles.mapWrap}>
-        <MapLibreGL.MapView
+        <WebView
+          ref={webviewRef}
+          originWhitelist={["*"]}
+          source={{ html: getMapHtml() }}
+          onMessage={handleWebViewMessage}
           style={styles.map}
-          styleJSON={currentMode.styleJSON}
-          onLongPress={handleLongPress}
-          logoEnabled={false}
-          attributionEnabled={true}
-        >
-          <MapLibreGL.Camera
-            ref={cameraRef}
-            defaultSettings={{
-              centerCoordinate: initialCenter,
-              zoomLevel: 15,
-            }}
-          />
-
-          <MapLibreGL.UserLocation visible={true} />
-
-          {origin && (
-            <MapLibreGL.PointAnnotation id="origin" coordinate={[origin.longitude, origin.latitude]}>
-              <View style={[styles.dot, { backgroundColor: "#2e7d32" }]} />
-            </MapLibreGL.PointAnnotation>
-          )}
-
-          {destination && (
-            <MapLibreGL.PointAnnotation id="destination" coordinate={[destination.longitude, destination.latitude]}>
-              <View style={[styles.dot, { backgroundColor: "#e53935" }]} />
-            </MapLibreGL.PointAnnotation>
-          )}
-
-          {marks.map((m, idx) => (
-            <MapLibreGL.PointAnnotation key={`mark-${idx}`} id={`mark-${idx}`} coordinate={[m.longitude, m.latitude]}>
-              <View style={[styles.dot, { backgroundColor: "#f9a825" }]} />
-            </MapLibreGL.PointAnnotation>
-          ))}
-
-          {buildPolylines().map((seg, idx) => (
-            <MapLibreGL.ShapeSource key={`route-${idx}`} id={`route-src-${idx}`} shape={toGeoJSON(seg.points)}>
-              <MapLibreGL.LineLayer
-                id={`route-line-${idx}`}
-                style={{ lineColor: seg.color, lineWidth: 5, lineCap: "round", lineJoin: "round" }}
-              />
-            </MapLibreGL.ShapeSource>
-          ))}
-
-          {safeCameras.map((c) => (
-            <MapLibreGL.PointAnnotation key={c.id} id={`cam-${c.id}`} coordinate={[c.location.longitude, c.location.latitude]}>
-              <View style={[styles.dot, { backgroundColor: "#fb8c00" }]} />
-            </MapLibreGL.PointAnnotation>
-          ))}
-
-          {safeCrash.map((r) => (
-            <MapLibreGL.PointAnnotation
-              key={r.id}
-              id={`crash-${r.id}`}
-              coordinate={[r.location.longitude, r.location.latitude]}
-              onSelected={() => setSelectedReport({ type: "crash", report: r })}
-            >
-              <View style={[styles.dot, { backgroundColor: "#000" }]} />
-            </MapLibreGL.PointAnnotation>
-          ))}
-
-          {safePolice.map((r) => (
-            <MapLibreGL.PointAnnotation
-              key={r.id}
-              id={`police-${r.id}`}
-              coordinate={[r.location.longitude, r.location.latitude]}
-              onSelected={() => setSelectedReport({ type: "police", report: r })}
-            >
-              <View style={[styles.dot, { backgroundColor: "#8e24aa" }]} />
-            </MapLibreGL.PointAnnotation>
-          ))}
-
-          {safePoi.map((poi) => (
-            <MapLibreGL.PointAnnotation
-              key={poi.id}
-              id={`poi-${poi.id}`}
-              coordinate={[poi.location.longitude, poi.location.latitude]}
-              onSelected={() => {
-                setPendingPoint(poi.location);
-                setSheetVisible(true);
-              }}
-            >
-              <View style={[styles.dot, { backgroundColor: "#00897b" }]} />
-            </MapLibreGL.PointAnnotation>
-          ))}
-        </MapLibreGL.MapView>
+          javaScriptEnabled
+          domStorageEnabled
+          onError={(e) => console.log("WebView error:", e.nativeEvent)}
+        />
 
         <TouchableOpacity style={styles.locateBtn} onPress={goToMyLocation}>
           <Text style={styles.locateBtnText}>📍</Text>
@@ -551,13 +450,6 @@ const styles = StyleSheet.create({
   mapModeTextActive: { color: "#fff" },
   loadingRow: { backgroundColor: "#fff", padding: 6, alignItems: "center" },
   loadingText: { fontSize: 12, color: "#888" },
-  dot: {
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-    borderWidth: 2,
-    borderColor: "#fff",
-  },
   locateBtn: {
     position: "absolute",
     bottom: 24,
