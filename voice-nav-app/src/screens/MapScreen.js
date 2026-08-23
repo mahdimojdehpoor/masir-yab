@@ -23,11 +23,46 @@ import {
 import { listenToCameras, checkCameraAlerts } from "../services/cameraService";
 import { searchNearby } from "../services/poiService";
 import { speak } from "../services/voiceService";
+import { fetchWithTimeout } from "../utils/fetchWithTimeout";
 
 MapLibreGL.setAccessToken(null);
 
-// استایل نقشه‌ی رایگان و بدون کلید (OpenFreeMap)
-const MAP_STYLE_URL = "https://tiles.openfreemap.org/styles/liberty";
+// حالت‌های مختلف نقشه — همه رایگان و بدون کلید
+const STREET_STYLE_URL = "https://tiles.openfreemap.org/styles/liberty";
+
+const SATELLITE_STYLE_JSON = JSON.stringify({
+  version: 8,
+  sources: {
+    esri: {
+      type: "raster",
+      tiles: [
+        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+      ],
+      tileSize: 256,
+      attribution: "Esri, Maxar, Earthstar Geographics",
+    },
+  },
+  layers: [{ id: "esri-satellite", type: "raster", source: "esri" }],
+});
+
+const TOPO_STYLE_JSON = JSON.stringify({
+  version: 8,
+  sources: {
+    otm: {
+      type: "raster",
+      tiles: ["https://a.tile.opentopomap.org/{z}/{x}/{y}.png"],
+      tileSize: 256,
+      attribution: "OpenTopoMap (CC-BY-SA)",
+    },
+  },
+  layers: [{ id: "otm-layer", type: "raster", source: "otm" }],
+});
+
+const MAP_MODES = {
+  street: { label: "خیابانی", styleURL: STREET_STYLE_URL, styleJSON: null },
+  satellite: { label: "ماهواره‌ای", styleURL: null, styleJSON: SATELLITE_STYLE_JSON },
+  topo: { label: "توپوگرافی", styleURL: null, styleJSON: TOPO_STYLE_JSON },
+};
 
 export default function MapScreen() {
   const cameraRef = useRef(null);
@@ -45,7 +80,7 @@ export default function MapScreen() {
   const [policeReports, setPoliceReports] = useState([]);
   const [cameras, setCameras] = useState([]);
   const [marks, setMarks] = useState([]);
-  const [selectedReport, setSelectedReport] = useState(null); // { type, report }
+  const [selectedReport, setSelectedReport] = useState(null);
 
   // جستجو
   const [searchQuery, setSearchQuery] = useState("");
@@ -55,6 +90,9 @@ export default function MapScreen() {
   // امکانات (POI)
   const [activeCategory, setActiveCategory] = useState(null);
   const [poiResults, setPoiResults] = useState([]);
+
+  // حالت نقشه
+  const [mapMode, setMapMode] = useState("street");
 
   // موقعیت اولیه‌ی GPS
   useEffect(() => {
@@ -99,18 +137,30 @@ export default function MapScreen() {
     };
   }, [cameras]);
 
-  // فقط یک‌بار، وقتی موقعیت واقعی GPS رسید، دوربین نقشه رو ببر روی همون نقطه
-  // (این جدا از initialCenter هست تا با هر آپدیت GPS نقشه مدام برنگرده و زوم/جابه‌جایی دستی کاربر خراب نشه)
+  // فقط یک‌بار، وقتی GPS واقعی رسید، دوربین رو ببر روی همون نقطه
   useEffect(() => {
     if (myLocation && !hasCenteredRef.current && cameraRef.current) {
       hasCenteredRef.current = true;
       cameraRef.current.setCamera({
         centerCoordinate: [myLocation.longitude, myLocation.latitude],
-        zoomLevel: 14,
+        zoomLevel: 15,
         animationDuration: 500,
       });
     }
   }, [myLocation]);
+
+  // دکمه‌ی «موقعیت من» — همیشه قابل استفاده برای بازگشت سریع و زوم
+  const goToMyLocation = () => {
+    if (myLocation && cameraRef.current) {
+      cameraRef.current.setCamera({
+        centerCoordinate: [myLocation.longitude, myLocation.latitude],
+        zoomLevel: 16,
+        animationDuration: 600,
+      });
+    } else {
+      speak("موقعیت هنوز دریافت نشده");
+    }
+  };
 
   // محاسبه‌ی مسیرها
   useEffect(() => {
@@ -121,18 +171,18 @@ export default function MapScreen() {
           setRoutes(options);
           speak("مسیرهای پیشنهادی آماده شد");
         })
-        .catch(() => speak("مشکلی در محاسبه‌ی مسیر پیش آمد"));
+        .catch(() => speak("مشکلی در محاسبه‌ی مسیر پیش آمد، اتصال اینترنت را چک کنید"));
     }
   }, [origin, destination, crashReports, policeReports]);
 
-  // جستجوی مکان
+  // جستجوی مکان (با تایم‌اوت و تلاش مجدد برای اینترنت ناپایدار)
   const search = async () => {
     if (!searchQuery.trim()) return;
     try {
       const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(
         searchQuery
       )}&format=json&limit=1`;
-      const res = await fetch(url, { headers: { "User-Agent": "VoiceNavApp" } });
+      const res = await fetchWithTimeout(url, { headers: { "User-Agent": "VoiceNavApp" } }, 8000, 2);
       const data = await res.json();
       if (data.length > 0) {
         const point = {
@@ -150,11 +200,10 @@ export default function MapScreen() {
         speak("موردی پیدا نشد");
       }
     } catch {
-      speak("جستجو با خطا مواجه شد");
+      speak("جستجو با خطا مواجه شد، اتصال اینترنت را چک کنید");
     }
   };
 
-  // لمس طولانی روی نقشه
   const handleLongPress = (feature) => {
     const [lng, lat] = feature.geometry.coordinates;
     setPendingPoint({ latitude: lat, longitude: lng });
@@ -202,7 +251,6 @@ export default function MapScreen() {
     return 2 * R * Math.asin(Math.sqrt(h));
   }
 
-  // ساخت سگمنت‌های رنگی مسیر (اورلپ = سبز)
   const buildPolylines = useCallback(() => {
     if (!routes || activeMethods.length === 0) return [];
 
@@ -246,7 +294,6 @@ export default function MapScreen() {
     return segments;
   }, [routes, activeMethods]);
 
-  // تبدیل نقاط به GeoJSON برای MapLibre
   const toGeoJSON = (points) => ({
     type: "Feature",
     geometry: {
@@ -266,9 +313,16 @@ export default function MapScreen() {
     ? [myLocation.longitude, myLocation.latitude]
     : [51.389, 35.6892];
 
+  // فیلتر آیتم‌های بی‌مختصات که باعث کرش می‌شن
+  const safeCameras = cameras.filter((c) => c.location && typeof c.location.longitude === "number");
+  const safeCrash = crashReports.filter((r) => r.location && typeof r.location.longitude === "number");
+  const safePolice = policeReports.filter((r) => r.location && typeof r.location.longitude === "number");
+  const safePoi = poiResults.filter((p) => p.location && typeof p.location.longitude === "number");
+
+  const currentMode = MAP_MODES[mapMode];
+
   return (
     <View style={styles.container}>
-      {/* کادر جستجوی واحد */}
       <View style={styles.searchRow}>
         <TextInput
           style={styles.input}
@@ -282,7 +336,6 @@ export default function MapScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* چک‌باکس‌های ۴ معیار مسیر */}
       <View style={styles.methodRow}>
         {methodOptions.map((m) => {
           const active = activeMethods.includes(m.key);
@@ -301,138 +354,135 @@ export default function MapScreen() {
         })}
       </View>
 
+      {/* سوییچ حالت نقشه */}
+      <View style={styles.mapModeRow}>
+        {Object.entries(MAP_MODES).map(([key, mode]) => (
+          <TouchableOpacity
+            key={key}
+            onPress={() => setMapMode(key)}
+            style={[styles.mapModeBtn, mapMode === key && styles.mapModeBtnActive]}
+          >
+            <Text style={[styles.mapModeText, mapMode === key && styles.mapModeTextActive]}>
+              {mode.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
       <CategoryBar activeCategory={activeCategory} onSelect={handleCategorySelect} />
 
-      <MapLibreGL.MapView
-        style={styles.map}
-        styleURL={MAP_STYLE_URL}
-        onLongPress={handleLongPress}
-        logoEnabled={false}
-        attributionEnabled={true}
-      >
-        <MapLibreGL.Camera
-          ref={cameraRef}
-          defaultSettings={{
-            centerCoordinate: initialCenter,
-            zoomLevel: 13,
-          }}
-        />
-
-        <MapLibreGL.UserLocation visible={true} />
-
-        {origin && (
-          <MapLibreGL.PointAnnotation
-            id="origin"
-            coordinate={[origin.longitude, origin.latitude]}
-          >
-            <View style={[styles.dot, { backgroundColor: "#2e7d32" }]} />
-          </MapLibreGL.PointAnnotation>
-        )}
-
-        {destination && (
-          <MapLibreGL.PointAnnotation
-            id="destination"
-            coordinate={[destination.longitude, destination.latitude]}
-          >
-            <View style={[styles.dot, { backgroundColor: "#e53935" }]} />
-          </MapLibreGL.PointAnnotation>
-        )}
-
-        {marks.map((m, idx) => (
-          <MapLibreGL.PointAnnotation
-            key={`mark-${idx}`}
-            id={`mark-${idx}`}
-            coordinate={[m.longitude, m.latitude]}
-          >
-            <View style={[styles.dot, { backgroundColor: "#f9a825" }]} />
-          </MapLibreGL.PointAnnotation>
-        ))}
-
-        {buildPolylines().map((seg, idx) => (
-          <MapLibreGL.ShapeSource key={`route-${idx}`} id={`route-src-${idx}`} shape={toGeoJSON(seg.points)}>
-            <MapLibreGL.LineLayer
-              id={`route-line-${idx}`}
-              style={{ lineColor: seg.color, lineWidth: 5, lineCap: "round", lineJoin: "round" }}
-            />
-          </MapLibreGL.ShapeSource>
-        ))}
-
-        {cameras.map((c) => (
-          <MapLibreGL.PointAnnotation
-            key={c.id}
-            id={`cam-${c.id}`}
-            coordinate={[c.location.longitude, c.location.latitude]}
-          >
-            <View style={[styles.dot, { backgroundColor: "#fb8c00" }]} />
-          </MapLibreGL.PointAnnotation>
-        ))}
-
-        {crashReports.map((r) => (
-          <MapLibreGL.PointAnnotation
-            key={r.id}
-            id={`crash-${r.id}`}
-            coordinate={[r.location.longitude, r.location.latitude]}
-            onSelected={() => setSelectedReport({ type: "crash", report: r })}
-          >
-            <View style={[styles.dot, { backgroundColor: "#000" }]} />
-          </MapLibreGL.PointAnnotation>
-        ))}
-
-        {policeReports.map((r) => (
-          <MapLibreGL.PointAnnotation
-            key={r.id}
-            id={`police-${r.id}`}
-            coordinate={[r.location.longitude, r.location.latitude]}
-            onSelected={() => setSelectedReport({ type: "police", report: r })}
-          >
-            <View style={[styles.dot, { backgroundColor: "#8e24aa" }]} />
-          </MapLibreGL.PointAnnotation>
-        ))}
-
-        {poiResults.map((poi) => (
-          <MapLibreGL.PointAnnotation
-            key={poi.id}
-            id={`poi-${poi.id}`}
-            coordinate={[poi.location.longitude, poi.location.latitude]}
-            onSelected={() => {
-              setPendingPoint(poi.location);
-              setSheetVisible(true);
+      <View style={styles.mapWrap}>
+        <MapLibreGL.MapView
+          style={styles.map}
+          styleURL={currentMode.styleURL || undefined}
+          styleJSON={currentMode.styleJSON || undefined}
+          onLongPress={handleLongPress}
+          logoEnabled={false}
+          attributionEnabled={true}
+        >
+          <MapLibreGL.Camera
+            ref={cameraRef}
+            defaultSettings={{
+              centerCoordinate: initialCenter,
+              zoomLevel: 13,
             }}
-          >
-            <View style={[styles.dot, { backgroundColor: "#00897b" }]} />
-          </MapLibreGL.PointAnnotation>
-        ))}
-      </MapLibreGL.MapView>
+          />
+
+          <MapLibreGL.UserLocation visible={true} />
+
+          {origin && (
+            <MapLibreGL.PointAnnotation id="origin" coordinate={[origin.longitude, origin.latitude]}>
+              <View style={[styles.dot, { backgroundColor: "#2e7d32" }]} />
+            </MapLibreGL.PointAnnotation>
+          )}
+
+          {destination && (
+            <MapLibreGL.PointAnnotation id="destination" coordinate={[destination.longitude, destination.latitude]}>
+              <View style={[styles.dot, { backgroundColor: "#e53935" }]} />
+            </MapLibreGL.PointAnnotation>
+          )}
+
+          {marks.map((m, idx) => (
+            <MapLibreGL.PointAnnotation key={`mark-${idx}`} id={`mark-${idx}`} coordinate={[m.longitude, m.latitude]}>
+              <View style={[styles.dot, { backgroundColor: "#f9a825" }]} />
+            </MapLibreGL.PointAnnotation>
+          ))}
+
+          {buildPolylines().map((seg, idx) => (
+            <MapLibreGL.ShapeSource key={`route-${idx}`} id={`route-src-${idx}`} shape={toGeoJSON(seg.points)}>
+              <MapLibreGL.LineLayer
+                id={`route-line-${idx}`}
+                style={{ lineColor: seg.color, lineWidth: 5, lineCap: "round", lineJoin: "round" }}
+              />
+            </MapLibreGL.ShapeSource>
+          ))}
+
+          {safeCameras.map((c) => (
+            <MapLibreGL.PointAnnotation key={c.id} id={`cam-${c.id}`} coordinate={[c.location.longitude, c.location.latitude]}>
+              <View style={[styles.dot, { backgroundColor: "#fb8c00" }]} />
+            </MapLibreGL.PointAnnotation>
+          ))}
+
+          {safeCrash.map((r) => (
+            <MapLibreGL.PointAnnotation
+              key={r.id}
+              id={`crash-${r.id}`}
+              coordinate={[r.location.longitude, r.location.latitude]}
+              onSelected={() => setSelectedReport({ type: "crash", report: r })}
+            >
+              <View style={[styles.dot, { backgroundColor: "#000" }]} />
+            </MapLibreGL.PointAnnotation>
+          ))}
+
+          {safePolice.map((r) => (
+            <MapLibreGL.PointAnnotation
+              key={r.id}
+              id={`police-${r.id}`}
+              coordinate={[r.location.longitude, r.location.latitude]}
+              onSelected={() => setSelectedReport({ type: "police", report: r })}
+            >
+              <View style={[styles.dot, { backgroundColor: "#8e24aa" }]} />
+            </MapLibreGL.PointAnnotation>
+          ))}
+
+          {safePoi.map((poi) => (
+            <MapLibreGL.PointAnnotation
+              key={poi.id}
+              id={`poi-${poi.id}`}
+              coordinate={[poi.location.longitude, poi.location.latitude]}
+              onSelected={() => {
+                setPendingPoint(poi.location);
+                setSheetVisible(true);
+              }}
+            >
+              <View style={[styles.dot, { backgroundColor: "#00897b" }]} />
+            </MapLibreGL.PointAnnotation>
+          ))}
+        </MapLibreGL.MapView>
+
+        {/* دکمه‌ی موقعیت من */}
+        <TouchableOpacity style={styles.locateBtn} onPress={goToMyLocation}>
+          <Text style={styles.locateBtnText}>📍</Text>
+        </TouchableOpacity>
+      </View>
 
       {selectedReport && (
         <ReportBadge
           label={selectedReport.type === "crash" ? "🚗 تصادف" : "👮 ایست پلیس"}
           report={selectedReport.report}
           onConfirm={() => {
-            confirmReport(
-              selectedReport.type,
-              selectedReport.report.id,
-              selectedReport.report.confirmCount || 0
-            );
+            confirmReport(selectedReport.type, selectedReport.report.id, selectedReport.report.confirmCount || 0);
             setSelectedReport(null);
           }}
           onDeny={() => {
-            denyReport(
-              selectedReport.type,
-              selectedReport.report.id,
-              selectedReport.report.denyCount || 0
-            );
+            denyReport(selectedReport.type, selectedReport.report.id, selectedReport.report.denyCount || 0);
             setSelectedReport(null);
           }}
           onClose={() => setSelectedReport(null)}
         />
       )}
 
-      <ActionSheet
-        visible={sheetVisible}
-        onClose={() => setSheetVisible(false)}
-        onSelect={handleSheetSelect}
-      />
+      <ActionSheet visible={sheetVisible} onClose={() => setSheetVisible(false)} onSelect={handleSheetSelect} />
 
       <Signature />
     </View>
@@ -441,6 +491,7 @@ export default function MapScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  mapWrap: { flex: 1, position: "relative" },
   map: { flex: 1 },
   searchRow: { flexDirection: "row", alignItems: "center", padding: 8, paddingTop: 40 },
   input: {
@@ -461,6 +512,23 @@ const styles = StyleSheet.create({
   },
   checkboxRow: { flexDirection: "row", alignItems: "center", marginHorizontal: 2 },
   checkbox: { width: 16, height: 16, borderRadius: 4, borderWidth: 2, marginRight: 4 },
+  mapModeRow: {
+    flexDirection: "row",
+    justifyContent: "center",
+    paddingVertical: 6,
+    backgroundColor: "#fff",
+  },
+  mapModeBtn: {
+    borderWidth: 1,
+    borderColor: "#ccc",
+    borderRadius: 16,
+    paddingVertical: 4,
+    paddingHorizontal: 12,
+    marginHorizontal: 4,
+  },
+  mapModeBtnActive: { backgroundColor: "#1e90ff", borderColor: "#1e90ff" },
+  mapModeText: { fontSize: 12, color: "#333" },
+  mapModeTextActive: { color: "#fff" },
   dot: {
     width: 18,
     height: 18,
@@ -468,4 +536,20 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: "#fff",
   },
+  locateBtn: {
+    position: "absolute",
+    bottom: 24,
+    right: 16,
+    backgroundColor: "#fff",
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    alignItems: "center",
+    justifyContent: "center",
+    elevation: 5,
+    shadowColor: "#000",
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+  },
+  locateBtnText: { fontSize: 22 },
 });
