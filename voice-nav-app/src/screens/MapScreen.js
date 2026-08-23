@@ -13,7 +13,7 @@ import ActionSheet from "../components/ActionSheet";
 import ReportBadge from "../components/ReportBadge";
 import CategoryBar from "../components/CategoryBar";
 import Signature from "../components/Signature";
-import { getMapHtml } from "../mapHtml";
+import { getMapHtml } from "../utils/mapHtml";
 import { getRouteOptions, ROUTE_COLORS } from "../services/routingService";
 import {
   listenToReports,
