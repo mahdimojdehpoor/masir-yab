@@ -298,8 +298,10 @@ export default function MapScreen() {
       >
         <MapLibreGL.Camera
           ref={cameraRef}
-          zoomLevel={13}
-          centerCoordinate={initialCenter}
+          defaultSettings={{
+            centerCoordinate: initialCenter,
+            zoomLevel: 13,
+          }}
         />
 
         <MapLibreGL.UserLocation visible={true} />
