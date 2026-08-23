@@ -27,8 +27,23 @@ import { fetchWithTimeout } from "../utils/fetchWithTimeout";
 
 MapLibreGL.setAccessToken(null);
 
-// حالت‌های مختلف نقشه — همه رایگان و بدون کلید
-const STREET_STYLE_URL = "https://tiles.openfreemap.org/styles/liberty";
+// حالت‌های مختلف نقشه — همه رایگان، بدون کلید، و به‌صورت raster (پایدارتر از vector)
+const STREET_STYLE_JSON = JSON.stringify({
+  version: 8,
+  sources: {
+    osm: {
+      type: "raster",
+      tiles: [
+        "https://a.tile.openstreetmap.org/{z}/{x}/{y}.png",
+        "https://b.tile.openstreetmap.org/{z}/{x}/{y}.png",
+        "https://c.tile.openstreetmap.org/{z}/{x}/{y}.png",
+      ],
+      tileSize: 256,
+      attribution: "© OpenStreetMap contributors",
+    },
+  },
+  layers: [{ id: "osm-layer", type: "raster", source: "osm" }],
+});
 
 const SATELLITE_STYLE_JSON = JSON.stringify({
   version: 8,
@@ -59,9 +74,9 @@ const TOPO_STYLE_JSON = JSON.stringify({
 });
 
 const MAP_MODES = {
-  street: { label: "خیابانی", styleURL: STREET_STYLE_URL, styleJSON: null },
-  satellite: { label: "ماهواره‌ای", styleURL: null, styleJSON: SATELLITE_STYLE_JSON },
-  topo: { label: "توپوگرافی", styleURL: null, styleJSON: TOPO_STYLE_JSON },
+  street: { label: "خیابانی", styleJSON: STREET_STYLE_JSON },
+  satellite: { label: "ماهواره‌ای", styleJSON: SATELLITE_STYLE_JSON },
+  topo: { label: "توپوگرافی", styleJSON: TOPO_STYLE_JSON },
 };
 
 export default function MapScreen() {
@@ -90,6 +105,7 @@ export default function MapScreen() {
   // امکانات (POI)
   const [activeCategory, setActiveCategory] = useState(null);
   const [poiResults, setPoiResults] = useState([]);
+  const [loadingCategory, setLoadingCategory] = useState(false);
 
   // حالت نقشه
   const [mapMode, setMapMode] = useState("street");
@@ -143,13 +159,13 @@ export default function MapScreen() {
       hasCenteredRef.current = true;
       cameraRef.current.setCamera({
         centerCoordinate: [myLocation.longitude, myLocation.latitude],
-        zoomLevel: 15,
+        zoomLevel: 16,
         animationDuration: 500,
       });
     }
   }, [myLocation]);
 
-  // دکمه‌ی «موقعیت من» — همیشه قابل استفاده برای بازگشت سریع و زوم
+  // دکمه‌ی «موقعیت من»
   const goToMyLocation = () => {
     if (myLocation && cameraRef.current) {
       cameraRef.current.setCamera({
@@ -175,7 +191,7 @@ export default function MapScreen() {
     }
   }, [origin, destination, crashReports, policeReports]);
 
-  // جستجوی مکان (با تایم‌اوت و تلاش مجدد برای اینترنت ناپایدار)
+  // جستجوی مکان
   const search = async () => {
     if (!searchQuery.trim()) return;
     try {
@@ -193,7 +209,7 @@ export default function MapScreen() {
         setSheetVisible(true);
         cameraRef.current?.setCamera({
           centerCoordinate: [point.longitude, point.latitude],
-          zoomLevel: 14,
+          zoomLevel: 15,
           animationDuration: 800,
         });
       } else {
@@ -231,8 +247,10 @@ export default function MapScreen() {
       setPoiResults([]);
       return;
     }
+    setLoadingCategory(true);
     const center = myLocation || origin || { latitude: 35.6892, longitude: 51.389 };
     const results = await searchNearby(categoryKey, center);
+    setLoadingCategory(false);
     setPoiResults(results);
     if (results.length === 0) {
       speak("موردی در این نزدیکی پیدا نشد");
@@ -313,7 +331,6 @@ export default function MapScreen() {
     ? [myLocation.longitude, myLocation.latitude]
     : [51.389, 35.6892];
 
-  // فیلتر آیتم‌های بی‌مختصات که باعث کرش می‌شن
   const safeCameras = cameras.filter((c) => c.location && typeof c.location.longitude === "number");
   const safeCrash = crashReports.filter((r) => r.location && typeof r.location.longitude === "number");
   const safePolice = policeReports.filter((r) => r.location && typeof r.location.longitude === "number");
@@ -354,7 +371,6 @@ export default function MapScreen() {
         })}
       </View>
 
-      {/* سوییچ حالت نقشه */}
       <View style={styles.mapModeRow}>
         {Object.entries(MAP_MODES).map(([key, mode]) => (
           <TouchableOpacity
@@ -371,11 +387,16 @@ export default function MapScreen() {
 
       <CategoryBar activeCategory={activeCategory} onSelect={handleCategorySelect} />
 
+      {loadingCategory && (
+        <View style={styles.loadingRow}>
+          <Text style={styles.loadingText}>در حال جستجو...</Text>
+        </View>
+      )}
+
       <View style={styles.mapWrap}>
         <MapLibreGL.MapView
           style={styles.map}
-          styleURL={currentMode.styleURL || undefined}
-          styleJSON={currentMode.styleJSON || undefined}
+          styleJSON={currentMode.styleJSON}
           onLongPress={handleLongPress}
           logoEnabled={false}
           attributionEnabled={true}
@@ -384,7 +405,7 @@ export default function MapScreen() {
             ref={cameraRef}
             defaultSettings={{
               centerCoordinate: initialCenter,
-              zoomLevel: 13,
+              zoomLevel: 15,
             }}
           />
 
@@ -460,7 +481,6 @@ export default function MapScreen() {
           ))}
         </MapLibreGL.MapView>
 
-        {/* دکمه‌ی موقعیت من */}
         <TouchableOpacity style={styles.locateBtn} onPress={goToMyLocation}>
           <Text style={styles.locateBtnText}>📍</Text>
         </TouchableOpacity>
@@ -529,6 +549,8 @@ const styles = StyleSheet.create({
   mapModeBtnActive: { backgroundColor: "#1e90ff", borderColor: "#1e90ff" },
   mapModeText: { fontSize: 12, color: "#333" },
   mapModeTextActive: { color: "#fff" },
+  loadingRow: { backgroundColor: "#fff", padding: 6, alignItems: "center" },
+  loadingText: { fontSize: 12, color: "#888" },
   dot: {
     width: 18,
     height: 18,
