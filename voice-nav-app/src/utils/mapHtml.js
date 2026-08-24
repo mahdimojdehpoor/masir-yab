@@ -82,7 +82,8 @@ export function getMapHtml() {
         L.marker([data.destination.latitude, data.destination.longitude], { icon: makeDot('#e53935', 18) }).addTo(markersLayer);
       }
       (data.marks || []).forEach(function (m) {
-        L.marker([m.latitude, m.longitude], { icon: makeDot('#f9a825', 18) }).addTo(markersLayer);
+        var mk = L.marker([m.location.latitude, m.location.longitude], { icon: makeDot('#f9a825', 18) }).addTo(markersLayer);
+        mk.on('click', function () { send({ type: 'marker', kind: 'mark', id: m.id }); });
       });
       (data.cameras || []).forEach(function (c) {
         L.marker([c.location.latitude, c.location.longitude], { icon: makeDot('#fb8c00', 18) }).addTo(markersLayer);
