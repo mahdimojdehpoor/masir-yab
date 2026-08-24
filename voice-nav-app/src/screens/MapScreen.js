@@ -13,6 +13,8 @@ import ActionSheet from "../components/ActionSheet";
 import ReportBadge from "../components/ReportBadge";
 import CategoryBar from "../components/CategoryBar";
 import Signature from "../components/Signature";
+import NameMarkModal from "../components/NameMarkModal";
+import MarkDeleteConfirm from "../components/MarkDeleteConfirm";
 import { getMapHtml } from "../utils/mapHtml";
 import { getRouteOptions, ROUTE_COLORS } from "../services/routingService";
 import {
@@ -22,6 +24,7 @@ import {
   denyReport,
 } from "../services/reportService";
 import { listenToCameras, checkCameraAlerts } from "../services/cameraService";
+import { listenToMarks, addMark, deleteMark } from "../services/markService";
 import { searchNearby } from "../services/poiService";
 import { speak } from "../services/voiceService";
 import { fetchWithTimeout } from "../utils/fetchWithTimeout";
@@ -30,9 +33,8 @@ export default function MapScreen() {
   const webviewRef = useRef(null);
   const mapReadyRef = useRef(false);
   const hasCenteredRef = useRef(false);
-  const searchFocusedRef = useRef(false); // وقتی کاربر داره تایپ می‌کنه، آپدیت نقشه رو موقتاً نگه می‌داریم
+  const searchFocusedRef = useRef(false);
 
-  // HTML نقشه فقط یک‌بار ساخته می‌شه تا WebView مدام ری‌لود نشه
   const mapHtmlContent = useMemo(() => getMapHtml(), []);
 
   const [myLocation, setMyLocation] = useState(null);
@@ -40,16 +42,20 @@ export default function MapScreen() {
   const [destination, setDestination] = useState(null);
   const [routes, setRoutes] = useState(null);
   const [activeMethods, setActiveMethods] = useState(["combined"]);
+  const [routeLoading, setRouteLoading] = useState(false);
+  const [routeError, setRouteError] = useState(null);
 
   const [crashReports, setCrashReports] = useState([]);
   const [policeReports, setPoliceReports] = useState([]);
   const [cameras, setCameras] = useState([]);
   const [marks, setMarks] = useState([]);
   const [selectedReport, setSelectedReport] = useState(null);
+  const [selectedMark, setSelectedMark] = useState(null);
 
   const [searchQuery, setSearchQuery] = useState("");
   const [sheetVisible, setSheetVisible] = useState(false);
   const [pendingPoint, setPendingPoint] = useState(null);
+  const [nameModalVisible, setNameModalVisible] = useState(false);
 
   const [activeCategory, setActiveCategory] = useState(null);
   const [poiResults, setPoiResults] = useState([]);
@@ -81,7 +87,6 @@ export default function MapScreen() {
               speedKmh,
               cameras
             );
-            // اگه کاربر داره تایپ می‌کنه، فعلاً موقعیت رو آپدیت نکن تا کیبورد نپره
             if (!searchFocusedRef.current) {
               setMyLocation({ latitude: l.coords.latitude, longitude: l.coords.longitude });
             }
@@ -95,16 +100,17 @@ export default function MapScreen() {
     const unsubCrash = listenToReports("crash", setCrashReports);
     const unsubPolice = listenToReports("police", setPoliceReports);
     const unsubCam = listenToCameras(setCameras);
+    const unsubMarks = listenToMarks(setMarks);
 
     return () => {
       sub && sub.remove();
       unsubCrash();
       unsubPolice();
       unsubCam();
+      unsubMarks();
     };
   }, [cameras]);
 
-  // فقط یک‌بار، وقتی GPS واقعی رسید و نقشه آماده بود
   useEffect(() => {
     if (myLocation && mapReadyRef.current && !hasCenteredRef.current) {
       hasCenteredRef.current = true;
@@ -114,7 +120,6 @@ export default function MapScreen() {
     }
   }, [myLocation]);
 
-  // آپدیت داده‌های نقشه — اگه کاربر داره تایپ می‌کنه، صبر می‌کنیم
   useEffect(() => {
     if (!mapReadyRef.current) return;
     if (searchFocusedRef.current) return;
@@ -122,7 +127,7 @@ export default function MapScreen() {
       myLocation,
       origin,
       destination,
-      marks,
+      marks: safeFilter(marks),
       cameras: safeFilter(cameras),
       crashReports: safeFilter(crashReports),
       policeReports: safeFilter(policeReports),
@@ -134,7 +139,6 @@ export default function MapScreen() {
     );
   }, [myLocation, origin, destination, marks, cameras, crashReports, policeReports, poiResults, routes, activeMethods]);
 
-  // سوییچ حالت نقشه
   useEffect(() => {
     if (!mapReadyRef.current) return;
     webviewRef.current?.injectJavaScript(`setTileLayer('${mapMode}'); true;`);
@@ -154,16 +158,24 @@ export default function MapScreen() {
     }
   };
 
-  // محاسبه‌ی مسیرها
+  // محاسبه‌ی مسیرها با نمایش وضعیت لودینگ/خطا روی صفحه (نه فقط صدا)
   useEffect(() => {
     if (origin && destination) {
+      setRouteLoading(true);
+      setRouteError(null);
       const activeReports = [...crashReports, ...policeReports];
       getRouteOptions(origin, destination, activeReports)
         .then((options) => {
           setRoutes(options);
+          setRouteLoading(false);
           speak("مسیرهای پیشنهادی آماده شد");
         })
-        .catch(() => speak("مشکلی در محاسبه‌ی مسیر پیش آمد، اتصال اینترنت را چک کنید"));
+        .catch((e) => {
+          setRouteLoading(false);
+          setRouteError("مسیر پیدا نشد، اتصال اینترنت را بررسی کنید");
+          speak("مشکلی در محاسبه‌ی مسیر پیش آمد");
+          console.log("Route error:", e.message);
+        });
     }
   }, [origin, destination, crashReports, policeReports]);
 
@@ -179,12 +191,11 @@ export default function MapScreen() {
     return 2 * R * Math.asin(Math.sqrt(h));
   }
 
-  // جستجوی مکان — محدوده رو دور موقعیت خودمون می‌بندیم تا نتایج شهر درست بیاد، نه شهر دیگه با اسم مشابه
   const search = async () => {
     if (!searchQuery.trim()) return;
     try {
       const center = myLocation || { latitude: 35.6892, longitude: 51.389 };
-      const delta = 1.5; // حدود ۱۶۰ کیلومتر اطراف موقعیت فعلی
+      const delta = 1.5;
       const viewbox = `${center.longitude - delta},${center.latitude + delta},${center.longitude + delta},${center.latitude - delta}`;
       const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(
         searchQuery
@@ -240,6 +251,9 @@ export default function MapScreen() {
             setPendingPoint(p.location);
             setSheetVisible(true);
           }
+        } else if (msg.kind === "mark") {
+          const m = marks.find((x) => x.id === msg.id);
+          if (m) setSelectedMark(m);
         }
       }
     } catch (e) {
@@ -248,12 +262,27 @@ export default function MapScreen() {
   };
 
   const handleSheetSelect = (action) => {
+    if (action === "clearRoute") {
+      setOrigin(null);
+      setDestination(null);
+      setRoutes(null);
+      setRouteError(null);
+      speak("مسیریابی قبلی پاک شد");
+      return;
+    }
     if (!pendingPoint) return;
     if (action === "origin") setOrigin(pendingPoint);
     else if (action === "destination") setDestination(pendingPoint);
-    else if (action === "mark") setMarks((m) => [...m, pendingPoint]);
+    else if (action === "mark") setNameModalVisible(true);
     else if (action === "crash") addReport("crash", pendingPoint);
     else if (action === "police") addReport("police", pendingPoint);
+  };
+
+  const handleSaveMark = (name) => {
+    if (pendingPoint) {
+      addMark(name, pendingPoint);
+    }
+    setNameModalVisible(false);
   };
 
   const toggleMethod = (key) => {
@@ -343,12 +372,8 @@ export default function MapScreen() {
           value={searchQuery}
           onChangeText={setSearchQuery}
           onSubmitEditing={search}
-          onFocus={() => {
-            searchFocusedRef.current = true;
-          }}
-          onBlur={() => {
-            searchFocusedRef.current = false;
-          }}
+          onFocus={() => { searchFocusedRef.current = true; }}
+          onBlur={() => { searchFocusedRef.current = false; }}
         />
         <TouchableOpacity onPress={search} style={styles.searchBtn}>
           <Text style={{ color: "#fff" }}>جستجو</Text>
@@ -395,6 +420,18 @@ export default function MapScreen() {
         </View>
       )}
 
+      {routeLoading && (
+        <View style={styles.loadingRow}>
+          <Text style={styles.loadingText}>در حال محاسبه‌ی مسیر...</Text>
+        </View>
+      )}
+
+      {routeError && (
+        <View style={styles.errorRow}>
+          <Text style={styles.errorText}>{routeError}</Text>
+        </View>
+      )}
+
       <View style={styles.mapWrap}>
         <WebView
           ref={webviewRef}
@@ -428,7 +465,24 @@ export default function MapScreen() {
         />
       )}
 
+      {selectedMark && (
+        <MarkDeleteConfirm
+          mark={selectedMark}
+          onDelete={() => {
+            deleteMark(selectedMark.id);
+            setSelectedMark(null);
+          }}
+          onClose={() => setSelectedMark(null)}
+        />
+      )}
+
       <ActionSheet visible={sheetVisible} onClose={() => setSheetVisible(false)} onSelect={handleSheetSelect} />
+
+      <NameMarkModal
+        visible={nameModalVisible}
+        onCancel={() => setNameModalVisible(false)}
+        onSave={handleSaveMark}
+      />
 
       <Signature />
     </View>
@@ -477,6 +531,8 @@ const styles = StyleSheet.create({
   mapModeTextActive: { color: "#fff" },
   loadingRow: { backgroundColor: "#fff", padding: 6, alignItems: "center" },
   loadingText: { fontSize: 12, color: "#888" },
+  errorRow: { backgroundColor: "#fdeaea", padding: 6, alignItems: "center" },
+  errorText: { fontSize: 12, color: "#c62828" },
   locateBtn: {
     position: "absolute",
     bottom: 24,
