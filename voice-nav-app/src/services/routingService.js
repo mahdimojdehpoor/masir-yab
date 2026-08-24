@@ -3,40 +3,57 @@
 // ۲. خلوت‌ترین: فقط بر اساس زمان تخمینی رسیدن (با احتساب تأخیر گزارش‌های تصادف/پلیس)
 // ۳. پرامکانات‌ترین: کمترین «فاصله تقسیم بر تعداد امکانات» یعنی بیشترین تراکم امکانات
 // ۴. ترکیبی: بین مسیرها اول نیمی که کوتاه‌تراند رو نگه می‌داریم، بعد بینشون کمترین زمان رسیدن رو انتخاب می‌کنیم
+//
+// برای مقاومت در برابر فیلترشکن/اینترنت ناپایدار: دو سرور OSRM امتحان می‌شه، و پاسخ اعتبارسنجی می‌شه
 import { fetchWithTimeout } from "../utils/fetchWithTimeout";
 
-const OSRM_URL = "https://router.project-osrm.org/route/v1/driving";
+const OSRM_SERVERS = [
+  "https://router.project-osrm.org/route/v1/driving",
+  "https://routing.openstreetmap.de/routed-car/route/v1/driving",
+];
+
 const OVERPASS_URL = "https://overpass-api.de/api/interpreter";
 
-const REPORT_DELAY_SECONDS = 180; // هر گزارش نزدیک مسیر این‌قدر به زمان تخمینی اضافه می‌کنه
+const REPORT_DELAY_SECONDS = 180;
 
 export const ROUTE_COLORS = {
-  shortest: "#1e90ff", // آبی
-  quietest: "#e53935", // قرمز
-  amenities: "#8e24aa", // بنفش
-  combined: "#43a047", // سبز
+  shortest: "#1e90ff",
+  quietest: "#e53935",
+  amenities: "#8e24aa",
+  combined: "#43a047",
 };
 
 export async function getRouteOptions(origin, destination, activeReports) {
   const coords = `${origin.longitude},${origin.latitude};${destination.longitude},${destination.latitude}`;
-  const url = `${OSRM_URL}/${coords}?alternatives=true&overview=full&geometries=geojson&steps=true`;
-
-  const res = await fetchWithTimeout(url, {}, 12000, 1);
-  const data = await res.json();
+  const data = await fetchFromAnyOsrmServer(coords);
 
   if (!data.routes || data.routes.length === 0) {
     throw new Error("مسیری پیدا نشد");
   }
 
-  const routesRaw = data.routes.map((r) => {
+  // اعتبارسنجی: هر مسیر باید حداقل ۲ نقطه، فاصله و زمان معتبر (عدد مثبت) داشته باشه
+  const validRoutes = data.routes.filter(
+    (r) =>
+      r.geometry?.coordinates?.length >= 2 &&
+      typeof r.distance === "number" &&
+      r.distance > 0 &&
+      typeof r.duration === "number" &&
+      r.duration >= 0
+  );
+
+  if (validRoutes.length === 0) {
+    throw new Error("داده‌ی مسیر نامعتبر بود");
+  }
+
+  const routesRaw = validRoutes.map((r) => {
     const points = r.geometry.coordinates.map(([lng, lat]) => ({
       latitude: lat,
       longitude: lng,
     }));
     return {
       points,
-      distance: r.distance, // متر
-      baseDuration: r.duration, // ثانیه
+      distance: r.distance,
+      baseDuration: r.duration,
     };
   });
 
@@ -49,7 +66,6 @@ export async function getRouteOptions(origin, destination, activeReports) {
   const withAmenities = await Promise.all(
     withBusy.map(async (r) => {
       const amenityCount = await countAmenitiesSafe(r.points);
-      // تراکم = فاصله تقسیم بر تعداد امکانات؛ هرچه کمتر یعنی امکانات بیشتری در واحد مسافت داریم
       const density = r.distance / Math.max(amenityCount, 0.5);
       return { ...r, amenityCount, density };
     })
@@ -69,7 +85,26 @@ export async function getRouteOptions(origin, destination, activeReports) {
   };
 }
 
-// اول نیمی از مسیرها که کوتاه‌ترن رو نگه می‌داریم، بعد بینشون کمترین زمان رسیدن رو انتخاب می‌کنیم
+// اول سرور اول رو امتحان می‌کنه، اگه شکست خورد یا داده‌ی خرابی داد، سرور دوم رو امتحان می‌کنه
+async function fetchFromAnyOsrmServer(coords) {
+  let lastError = null;
+  for (const server of OSRM_SERVERS) {
+    try {
+      const url = `${server}/${coords}?alternatives=true&overview=full&geometries=geojson&steps=true`;
+      const res = await fetchWithTimeout(url, {}, 12000, 1);
+      const data = await res.json();
+      if (data.code === "Ok" || data.routes) {
+        return data;
+      }
+      lastError = new Error("پاسخ نامعتبر از سرور مسیریابی");
+    } catch (e) {
+      lastError = e;
+      console.log("OSRM server failed, trying next:", server, e.message);
+    }
+  }
+  throw lastError || new Error("هیچ سرور مسیریابی جواب نداد");
+}
+
 function pickCombined(routes) {
   const sortedByDistance = [...routes].sort((a, b) => a.distance - b.distance);
   const halfCount = Math.max(1, Math.ceil(sortedByDistance.length / 2));
