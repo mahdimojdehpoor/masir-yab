@@ -1,7 +1,7 @@
 import React from "react";
 import { View, Text, TouchableOpacity, Modal, StyleSheet } from "react-native";
 
-// منوی انتخاب کاربرد یک نقطه: مبدأ / مقصد / نشانه‌گذاری / گزارش تصادف / گزارش پلیس
+// منوی انتخاب کاربرد یک نقطه + گزینه‌ی حذف مسیریابی قبلی
 export default function ActionSheet({ visible, onClose, onSelect }) {
   const options = [
     { key: "origin", label: "📍 انتخاب به‌عنوان مبدأ" },
@@ -9,6 +9,7 @@ export default function ActionSheet({ visible, onClose, onSelect }) {
     { key: "mark", label: "📌 نشانه‌گذاری این نقطه" },
     { key: "crash", label: "🚗 گزارش تصادف" },
     { key: "police", label: "👮 گزارش ایست پلیس" },
+    { key: "clearRoute", label: "🗑 حذف مسیریابی قبلی" },
   ];
 
   return (
