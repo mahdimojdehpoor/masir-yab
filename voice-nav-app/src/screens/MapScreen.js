@@ -42,6 +42,7 @@ export default function MapScreen() {
   const [destination, setDestination] = useState(null);
   const [routes, setRoutes] = useState(null);
   const [activeMethods, setActiveMethods] = useState(["combined"]);
+  const [autoCombineMode, setAutoCombineMode] = useState(true); // true = خودکار (پیش‌فرض)، false = دقیق
   const [routeLoading, setRouteLoading] = useState(false);
   const [routeError, setRouteError] = useState(null);
 
@@ -60,10 +61,10 @@ export default function MapScreen() {
   const [activeCategory, setActiveCategory] = useState(null);
   const [poiResults, setPoiResults] = useState([]);
   const [loadingCategory, setLoadingCategory] = useState(false);
+  const [poiError, setPoiError] = useState(null);
 
   const [mapMode, setMapMode] = useState("street");
 
-  // موقعیت اولیه‌ی GPS
   useEffect(() => {
     let sub;
     (async () => {
@@ -137,7 +138,7 @@ export default function MapScreen() {
     webviewRef.current?.injectJavaScript(
       `updateData(${JSON.stringify(payload)}); true;`
     );
-  }, [myLocation, origin, destination, marks, cameras, crashReports, policeReports, poiResults, routes, activeMethods]);
+  }, [myLocation, origin, destination, marks, cameras, crashReports, policeReports, poiResults, routes, activeMethods, autoCombineMode]);
 
   useEffect(() => {
     if (!mapReadyRef.current) return;
@@ -158,7 +159,6 @@ export default function MapScreen() {
     }
   };
 
-  // محاسبه‌ی مسیرها با نمایش وضعیت لودینگ/خطا روی صفحه (نه فقط صدا)
   useEffect(() => {
     if (origin && destination) {
       setRouteLoading(true);
@@ -291,32 +291,45 @@ export default function MapScreen() {
     );
   };
 
+  // مورد ۵: اگه واقعاً خطای شبکه بود، پیام جدا نشون بده (نه فقط «چیزی پیدا نشد»)
   const handleCategorySelect = async (categoryKey) => {
     setActiveCategory(categoryKey);
+    setPoiError(null);
     if (!categoryKey) {
       setPoiResults([]);
       return;
     }
     setLoadingCategory(true);
-    const center = myLocation || origin || { latitude: 35.6892, longitude: 51.389 };
-    const results = await searchNearby(categoryKey, center);
-    setLoadingCategory(false);
-    setPoiResults(results);
-    if (results.length === 0) {
-      speak("موردی در این نزدیکی پیدا نشد");
+    try {
+      const center = myLocation || origin || { latitude: 35.6892, longitude: 51.389 };
+      const results = await searchNearby(categoryKey, center);
+      setPoiResults(results);
+      if (results.length === 0) {
+        speak("موردی در این نزدیکی پیدا نشد");
+      }
+    } catch (e) {
+      console.log("POI search error:", e.message);
+      setPoiError("خطا در جستجوی امکانات، اتصال اینترنت را بررسی کنید");
+      speak("خطا در جستجوی امکانات");
+    } finally {
+      setLoadingCategory(false);
     }
   };
 
+  // مورد ۶: حالت «خودکار» (پیش‌فرض) = هرجا چند معیار انتخابی هم‌پوشانی داشتن، سبز (ترکیبی) نشون بده ولو تیک ترکیبی خاموش باشه
+  // حالت «دقیق» = هر معیار فقط با رنگ خودش، بدون ادغام؛ و اگه هیچ‌کدوم تیک نخورده بود، هیچ مسیری نشون داده نشه
   const buildPolylines = useCallback(() => {
     if (!routes || activeMethods.length === 0) return [];
 
     const selected = activeMethods.map((k) => routes[k]).filter(Boolean);
     if (selected.length === 0) return [];
 
-    if (selected.length === 1) {
-      return [{ points: selected[0].points, color: selected[0].color }];
+    if (selected.length === 1 || !autoCombineMode) {
+      // حالت دقیق: هر مسیر فقط با رنگ خودش، بدون ادغام سبز
+      return selected.map((r) => ({ points: r.points, color: r.color }));
     }
 
+    // حالت خودکار: جاهایی که چند مسیر انتخابی روی هم می‌افتن، سبز (ترکیبی) بشه
     const OVERLAP_METERS = 60;
     const base = selected[0];
 
@@ -348,7 +361,7 @@ export default function MapScreen() {
     });
 
     return segments;
-  }, [routes, activeMethods]);
+  }, [routes, activeMethods, autoCombineMode]);
 
   const methodOptions = [
     { key: "quietest", label: "خلوت‌ترین" },
@@ -396,6 +409,15 @@ export default function MapScreen() {
             </TouchableOpacity>
           );
         })}
+
+        {/* مورد ۶: سوییچ حالت خودکار / دقیق */}
+        <TouchableOpacity
+          onPress={() => setAutoCombineMode((v) => !v)}
+          style={styles.combineToggle}
+        >
+          <Text style={styles.combineToggleIcon}>{autoCombineMode ? "🔀" : "🎯"}</Text>
+          <Text style={styles.combineToggleText}>{autoCombineMode ? "خودکار" : "دقیق"}</Text>
+        </TouchableOpacity>
       </View>
 
       <View style={styles.mapModeRow}>
@@ -417,6 +439,12 @@ export default function MapScreen() {
       {loadingCategory && (
         <View style={styles.loadingRow}>
           <Text style={styles.loadingText}>در حال جستجو...</Text>
+        </View>
+      )}
+
+      {poiError && (
+        <View style={styles.errorRow}>
+          <Text style={styles.errorText}>{poiError}</Text>
         </View>
       )}
 
@@ -507,11 +535,25 @@ const styles = StyleSheet.create({
   methodRow: {
     flexDirection: "row",
     justifyContent: "space-around",
+    alignItems: "center",
     paddingVertical: 6,
     backgroundColor: "#fff",
+    flexWrap: "wrap",
   },
   checkboxRow: { flexDirection: "row", alignItems: "center", marginHorizontal: 2 },
   checkbox: { width: 16, height: 16, borderRadius: 4, borderWidth: 2, marginRight: 4 },
+  combineToggle: {
+    flexDirection: "row",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#999",
+    borderRadius: 14,
+    paddingVertical: 3,
+    paddingHorizontal: 8,
+    marginHorizontal: 2,
+  },
+  combineToggleIcon: { fontSize: 13, marginRight: 3 },
+  combineToggleText: { fontSize: 11, color: "#555" },
   mapModeRow: {
     flexDirection: "row",
     justifyContent: "center",
